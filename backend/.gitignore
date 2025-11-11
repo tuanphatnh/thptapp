@@ -1,0 +1,3 @@
+# Bỏ qua thư viện và file cấu hình
+node_modules/
+.env

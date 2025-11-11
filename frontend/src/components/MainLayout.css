@@ -1,0 +1,140 @@
+.main-layout {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: row; 
+}
+
+/* --- Mobile Header (Hidden by default on Desktop) --- */
+.mobile-header {
+  display: none; /* QUAN TRỌNG: Ẩn hoàn toàn trên Desktop (> 768px) */
+  background-color: #1e293b;
+  color: white;
+  padding: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  height: 60px;
+}
+
+.mobile-brand {
+  font-weight: bold;
+  color: #fbbf24;
+  font-size: 1.2rem;
+}
+
+.menu-toggle {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 5px;
+}
+
+/* --- Sidebar (Navbar) --- */
+.navbar {
+  width: 180px; /* Đã giảm từ 240px */
+  background-color: #1e293b;
+  color: white;
+  padding: 15px; /* Đã giảm từ 20px */
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: transform 0.3s ease-in-out;
+}
+
+.navbar-brand {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #fbbf24;
+  margin-bottom: 30px; /* Giảm margin bottom */
+}
+
+.navbar-menu {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.navbar-menu li {
+  margin-bottom: 8px; /* Giảm margin item */
+}
+
+.navbar-menu a {
+  color: #94a3b8;
+  text-decoration: none;
+  display: block;
+  padding: 10px 10px; /* Giảm padding ngang */
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.navbar-menu a:hover, .navbar-menu a.active {
+  background-color: #334155;
+  color: white;
+}
+
+/* --- Content Area --- */
+.content-area {
+  flex: 1;
+  padding: 30px;
+  background-color: #f1f5f9;
+  overflow-y: auto;
+  width: 100%;
+}
+
+/* --- RESPONSIVE LOGIC: MOBILE & TABLET (< 768px) --- */
+@media (max-width: 768px) {
+  .main-layout {
+    flex-direction: column;
+    padding-top: 60px; /* Space for fixed mobile header */
+  }
+
+  .mobile-header {
+    display: flex; /* Show header on mobile */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+  }
+  
+  .navbar {
+    /* Set position to the RIGHT and hide off-screen */
+    position: fixed;
+    top: 60px; 
+    left: auto; /* Remove left constraint */
+    right: 0; /* Pin to the right edge */
+    bottom: 0;
+    width: 200px; /* Đã giảm từ 250px trên mobile */
+    z-index: 40;
+    transform: translateX(100%); /* Slide 100% to the right (off-screen) */
+  }
+
+  .navbar.open {
+    transform: translateX(0); /* Slide back to position (0) */
+    box-shadow: -2px 0 5px rgba(0, 0, 0, 0.2); /* Shadow on the left edge */
+  }
+
+  .navbar-brand {
+    display: none; 
+  }
+
+  /* Overlay to dim the screen when the menu is open */
+  .mobile-overlay {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 30;
+  }
+
+  .content-area {
+    padding: 15px;
+  }
+}
