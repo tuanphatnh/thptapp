@@ -1,1586 +1,1773 @@
-// --- Frontend React: Hệ thống Thi đua THPT (Nâng cấp) ---
-import React, { useState, useEffect } from 'react';
-import { 
-  Users, Shield, BookOpen, Flag, CheckSquare, BarChart2, 
-  Calendar, UserCheck, XCircle, LogIn, LogOut, Home, Edit3, Settings,
-  Loader2, AlertCircle, PlusCircle, Trash2, Save, X, RefreshCw, Layers, Clock, Check // Thêm icon mới
-} from 'lucide-react';
+// --- Hệ thống Thi đua THPT - React Frontend (Nâng cấp V5.11 - Đầy đủ) ---
+// SỬA LỖI (V5.10): Xóa mảng 'ROLES' bị lỗi bên trong UserManagementPage
+// SỬA LỖI (V5.11): Hoán đổi 2 cột 'Vai trò' và 'Chức vụ' trong bảng Admin
 
-// --- Cấu hình API ---
-const API_BASE_URL = 'http://localhost:3001/api';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+// import jwt_decode from 'jwt-decode'; // Đã xóa
+import dayjs from 'dayjs';
+import 'dayjs/locale/vi';
+import weekOfYear from 'dayjs/plugin/weekOfYear';
+import isoWeek from 'dayjs/plugin/isoWeek';
 
-// --- Danh sách vai trò để dùng cho form ---
+// Cài đặt Day.js
+dayjs.extend(weekOfYear);
+dayjs.extend(isoWeek);
+dayjs.locale('vi');
+
+// --- TÁI SỬ DỤNG: Hàm gọi API (fetchData) ---
+const fetchData = async (url, method = 'GET', data = null, token = null) => {
+  const headers = new Headers();
+  headers.append('Content-Type', 'application/json');
+  if (token) {
+    headers.append('Authorization', `Bearer ${token}`);
+  }
+
+  const config = {
+    method: method,
+    headers: headers,
+    body: data ? JSON.stringify(data) : null,
+  };
+
+  try {
+    const response = await fetch(`http://localhost:3001${url}`, config);
+
+    if (response.status === 401 || response.status === 403) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('appUser'); 
+      window.location.reload(); 
+    }
+    
+    const result = await response.json().catch(() => {
+        if (response.ok) return { success: true, message: 'Hành động thành công' };
+        return { message: `Lỗi ${response.status} - Phản hồi không phải JSON.` };
+    });
+
+    if (!response.ok) {
+      console.error(`Lỗi API (${response.status}) tại ${url}:`, result.message);
+      throw new Error(result.message || `Lỗi ${response.status}`);
+    }
+
+    return result;
+
+  } catch (error) {
+    console.error(`Lỗi mạng hoặc API tại ${url}:`, error.message);
+    if (error.message.includes('Failed to fetch')) {
+        throw new Error('Không thể kết nối đến máy chủ. Vui lòng kiểm tra backend (server.js) có đang chạy không.');
+    }
+    throw error;
+  }
+};
+
+// --- TÁI SỬ DỤNG: Hàm lấy số tuần và ngày ---
+const getWeekNumber = (date) => {
+  return dayjs(date).isoWeek();
+};
+
+const getStartAndEndOfWeek = (weekNumber, year = dayjs().year()) => {
+  const startDate = dayjs().year(year).isoWeek(weekNumber).startOf('isoWeek');
+  const endDate = dayjs().year(year).isoWeek(weekNumber).endOf('isoWeek');
+  return {
+    start: startDate.format('DD/MM/YYYY'),
+    end: endDate.format('DD/MM/YYYY'),
+  };
+};
+
+// (MỚI V5.1) Hook tùy chỉnh để tải 55 quy tắc
+const useRules = (token) => {
+    const [allRules, setAllRules] = useState([]);
+    const [rulesError, setRulesError] = useState(null);
+    const [isLoadingRules, setIsLoadingRules] = useState(true);
+
+    useEffect(() => {
+        if (!token) return;
+
+        const loadRules = async () => {
+            try {
+                const data = await fetchData('/api/rules', 'GET', null, token);
+                setAllRules(data.rules || []);
+            } catch (err) {
+                setRulesError(err.message);
+            } finally {
+                setIsLoadingRules(false);
+            }
+        };
+        loadRules();
+    }, [token]);
+
+    // Trả về các quy tắc đã được lọc sẵn
+    const categorizedRules = useMemo(() => {
+        return {
+            inClassRules: allRules.filter(r => r.is_in_class_violation === 0), // Lỗi trong giờ (SĐB)
+            outOfClassRules: allRules.filter(r => r.is_in_class_violation === 1), // Lỗi ngoài giờ (Cờ đỏ)
+            bonusRules: allRules.filter(r => r.is_in_class_violation === 2), // Thưởng
+        };
+    }, [allRules]);
+
+    return { allRules, ...categorizedRules, rulesError, isLoadingRules };
+};
+
+// (MỚI V5.7) Hook tải Lớp học
+const useClasses = (token) => {
+    const [classes, setClasses] = useState([]);
+    const [classesError, setClassesError] = useState(null);
+    const [isLoadingClasses, setIsLoadingClasses] = useState(true);
+
+    const loadClasses = useCallback(async () => {
+        if (!token) return;
+        setIsLoadingClasses(true);
+        try {
+            const data = await fetchData('/api/classes', 'GET', null, token);
+            setClasses(data.classes || []);
+        } catch (err) {
+            setClassesError(err.message);
+        } finally {
+            setIsLoadingClasses(false);
+        }
+    }, [token]);
+
+    useEffect(() => {
+        loadClasses();
+    }, [loadClasses]);
+
+    return { classes, classesError, isLoadingClasses, refreshClasses: loadClasses };
+};
+
+// (MỚI V5.8) SỬA LỖI: Thêm lại hằng số ROLES đã bị xóa
 const ROLES = [
   { value: 'admin', label: 'Admin (Quản trị hệ thống)' },
   { value: 'ban_giam_hieu', label: 'Ban Giám Hiệu' },
   { value: 'doan_truong', label: 'Đoàn Trường' },
   { value: 'co_do', label: 'Cờ Đỏ' },
-  { value: 'bi_thu', label: 'Bí Thư Chi Đoàn' },
+  { value: 'bi_thu_chi_doan', label: 'Bí Thư Chi Đoàn' },
   { value: 'giao_vien', label: 'Giáo Viên' },
 ];
 
-// --- Component Chính: App ---
-export default function App() {
-  // Lấy token và user từ localStorage khi app khởi động (giữ phiên)
-  const [user, setUser] = useState(() => {
-    try {
-      const storedUser = localStorage.getItem('appUser');
-      return storedUser ? JSON.parse(storedUser) : null;
-    } catch {
-      return null;
-    }
-  }); 
-  const [token, setToken] = useState(() => localStorage.getItem('authToken')); 
-  const [currentPage, setCurrentPage] = useState('dashboard');
-  const [rankings, setRankings] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loginError, setLoginError] = useState(null);
-  const [rankingError, setRankingError] = useState(null);
+// --- COMPONENT: Header (Chung) ---
+const Header = ({ user, onLogout, onNavigate }) => {
+  return (
+    <div className="bg-white shadow-sm">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between items-center h-16">
+          <div className="flex-shrink-0 items-center">
+            <h1 className="text-2xl font-bold text-indigo-600 cursor-pointer">
+              <a onClick={() => onNavigate('dashboard')}>Hệ thống Thi đua THPT</a>
+            </h1>
+          </div>
+          <div className="ml-auto">
+            {user ? (
+              <div className="flex items-center space-x-4">
+                <span className="text-sm font-medium text-gray-700">
+                  Chào, <strong>{user.fullname || user.role}</strong>!
+                </span>
+                <button
+                  onClick={onLogout}
+                  className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                  Đăng xuất
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => onNavigate('login')}
+                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-indigo-600 bg-indigo-100 hover:bg-indigo-200">
+                Đăng nhập
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-  // --- Đồng bộ hóa trạng thái với localStorage ---
-  useEffect(() => {
-    if (user && token) {
-      localStorage.setItem('appUser', JSON.stringify(user));
-      localStorage.setItem('authToken', token);
-    } else {
-      localStorage.removeItem('appUser');
-      localStorage.removeItem('authToken');
-    }
-  }, [user, token]);
+// --- COMPONENT: Sidebar (Chung) ---
+const Sidebar = ({ userRole, onNavigate, currentPage }) => {
+  if (!userRole) return null; // Không hiển thị sidebar nếu chưa đăng nhập
 
-  // --- Lấy Bảng Xếp Hạng (Public) ---
-  useEffect(() => {
-    const fetchRankings = async () => {
-      try {
-        setIsLoading(true);
-        setRankingError(null);
-        const response = await fetch(`${API_BASE_URL}/rankings`);
-        
-        if (!response.ok) {
-          throw new Error(`Lỗi HTTP status: ${response.status}`);
-        }
+  const navClass = (page) =>
+    `block px-4 py-2 mt-2 text-sm font-medium rounded-lg ${
+      currentPage === page
+        ? 'bg-indigo-600 text-white'
+        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-800'
+    }`;
 
-        const data = await response.json();
+  const links = {
+    admin: [
+      { name: 'Quản trị Người dùng', page: 'admin_users' },
+      { name: 'Quản lý Lớp học', page: 'admin_classes' },
+      { name: 'Tính Toán Xếp Hạng', page: 'admin_calculate_ranking' },
+    ],
+    ban_giam_hieu: [
+      { name: 'Sổ Đầu Bài (Toàn trường)', page: 'logbook' }, // (Chưa implement V5.1)
+      { name: 'Tính Toán Xếp Hạng', page: 'admin_calculate_ranking' },
+    ],
+    doan_truong: [
+      { name: 'Duyệt Lỗi Vi Phạm', page: 'violation_approval' },
+      { name: 'Quản lý Thời Khóa Biểu', page: 'schedule_management' },
+    ],
+    giao_vien: [
+      { name: 'Sổ Đầu Bài (Lịch dạy)', page: 'logbook' },
+      { name: 'Lỗi Vi Phạm Lớp (CN)', page: 'class_violations' }, // (Chưa implement)
+    ],
+    co_do: [{ name: 'Gửi Báo Cáo Vi Phạm', page: 'violation_form' }],
+    bi_thu_chi_doan: [{ name: 'Xác Nhận Vi Phạm Lớp', page: 'violation_confirmation' }],
+  };
 
-        if (data.success) {
-          setRankings(data.rankings);
-        } else {
-          setRankingError(data.message || 'Không thể tải bảng xếp hạng.');
-        }
-      } catch (err) {
-        setRankingError('Không thể kết nối tới máy chủ backend. Hãy đảm bảo backend đang chạy!');
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  const userLinks = links[userRole] || [];
 
-    fetchRankings();
-  }, []);
+  return (
+    <nav className="mt-5 space-y-1">
+      <a href="#" onClick={() => onNavigate('dashboard')} className={navClass('dashboard')}>
+        Bảng Xếp Hạng (Dashboard)
+      </a>
+      {userLinks.map((link) => (
+        <a
+          key={link.page}
+          href="#"
+          onClick={() => onNavigate(link.page)}
+          className={navClass(link.page)}
+        >
+          {link.name}
+        </a>
+      ))}
+    </nav>
+  );
+};
 
-  // --- Hàm Đăng nhập (Gọi API) ---
-  const handleLogin = async (username, password) => {
+// --- COMPONENT: LoginPage (Trang Đăng nhập) ---
+const LoginPage = ({ onLoginSuccess }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
     setIsLoading(true);
-    setLoginError(null);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setUser(data.user);
-        setToken(data.token);
-        setCurrentPage('dashboard');
+      const data = await fetchData('/api/login', 'POST', { username, password });
+      if (data.success && data.token) {
+        onLoginSuccess(data.token, data.user);
       } else {
-        setLoginError(data.message || 'Đăng nhập thất bại.');
+        setError(data.message || 'Đăng nhập thất bại');
       }
     } catch (err) {
-      setLoginError('Lỗi kết nối. Không thể đăng nhập.');
+      setError(err.message || 'Lỗi kết nối. Vui lòng thử lại.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- Hàm Đăng xuất ---
-  const handleLogout = () => {
-    setUser(null);
-    setToken(null);
-    setCurrentPage('dashboard');
-    setLoginError(null);
-  };
-
-  // --- Hiển thị Lỗi (Error) và Thông báo (Success) ---
-  const DisplayMessage = ({ message, type, onClose }) => {
-    const isError = type === 'error';
-    const bgColor = isError ? 'bg-red-100 border-red-400 text-red-700' : 'bg-green-100 border-green-400 text-green-700';
-    const Icon = isError ? AlertCircle : CheckSquare;
-    const title = isError ? 'Đã xảy ra lỗi:' : 'Thành công:';
-
-    return (
-      <div className={`my-4 p-4 border rounded-lg flex items-center gap-2 ${bgColor}`}>
-        <Icon size={20} />
-        <div>
-          <span className="font-semibold">{title}</span> {message}
-        </div>
-        <button onClick={onClose} className="ml-auto font-bold">&times;</button>
-      </div>
-    );
-  };
-
-
-  // --- Giao diện (Render) ---
-  
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-gray-100 p-8 font-inter">
-        <Header user={null} onLogout={handleLogout} />
-        {rankingError && <DisplayMessage message={rankingError} type="error" onClose={() => setRankingError(null)} />}
-        
-        {isLoading && rankings.length === 0 ? (
-          <div className="flex justify-center items-center h-64">
-            <Loader2 className="animate-spin text-blue-500" size={48} />
-          </div>
-        ) : (
-          <PublicDashboard rankings={rankings} />
-        )}
-        
-        <LoginPage onLogin={handleLogin} isLoading={isLoading} loginError={loginError} setLoginError={setLoginError} />
-      </div>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen bg-gray-100 font-inter">
-      <Sidebar user={user} currentPage={currentPage} setCurrentPage={setCurrentPage} />
-
-      <div className="flex-1 p-8">
-        <Header user={user} onLogout={handleLogout} />
-        <MainContent 
-          user={user} 
-          token={token}
-          currentPage={currentPage} 
-          setCurrentPage={setCurrentPage}
-          rankings={rankings} 
-        />
+    <div className="flex items-center justify-center min-h-screen bg-gray-100 pt-12">
+      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
+        <h2 className="text-2xl font-bold text-center text-gray-900">
+          Đăng nhập Hệ thống Thi đua
+        </h2>
+        {error && (
+          <div className="p-3 rounded-md bg-red-50 border border-red-200">
+            <p className="text-sm font-medium text-red-700">{error}</p>
+          </div>
+        )}
+        <form className="space-y-6" onSubmit={handleSubmit}>
+          <div>
+            <label htmlFor="username" className="block text-sm font-medium text-gray-700">
+              Tên đăng nhập
+            </label>
+            <input
+              id="username"
+              type="text"
+              autoComplete="username"
+              required
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"/>
+          </div>
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+              Mật khẩu
+            </label>
+            <input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"/>
+          </div>
+          <div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
+              {isLoading ? 'Đang xử lý...' : 'Đăng nhập'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
-}
+};
 
-// --- Component Header ---
-function Header({ user, onLogout }) {
+
+// --- COMPONENT: RankingDashboard (Trang Dashboard Xếp hạng Công khai) ---
+const RankingDashboard = ({ token }) => {
+  const [rankings, setRankings] = useState([]);
+  const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentWeek, setCurrentWeek] = useState(getWeekNumber(new Date()));
+  const [selectedWeek, setSelectedWeek] = useState(currentWeek);
+
+  const loadRankings = useCallback(async (week) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await fetchData(`/api/rankings?week_number=${week}`, 'GET', null, token);
+      setRankings(data.rankings || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]); 
+
+  useEffect(() => {
+    loadRankings(selectedWeek);
+  }, [selectedWeek, loadRankings]); 
+
+  const weekOptions = Array.from({ length: 52 }, (_, i) => i + 1);
+  const weekDates = getStartAndEndOfWeek(selectedWeek);
+
   return (
-    <header className="flex justify-between items-center pb-6 border-b border-gray-200 mb-6">
-      <h1 className="text-3xl font-bold text-gray-800">Hệ thống Thi đua THPT</h1>
-      {user && (
-        <div className="flex items-center gap-4">
-          <span className="text-gray-700 text-sm">
-            Đăng nhập với: <strong className="font-semibold">{user.fullname}</strong> ({user.role})
+    <div className="p-6 bg-gray-50 min-h-full">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-3xl font-bold text-gray-800">
+          Bảng Xếp Hạng Thi Đua Tuần
+        </h2>
+        <div className="flex items-center space-x-4">
+          <span className="text-sm font-medium text-gray-600">
+            Chọn tuần:
           </span>
-          <button
-            onClick={onLogout}
-            className="flex items-center gap-2 px-4 py-2 bg-red-500 text-white rounded-lg shadow-md hover:bg-red-600 transition"
-          >
-            <LogOut size={18} />
-            Đăng xuất
-          </button>
+          <select
+            value={selectedWeek}
+            onChange={(e) => setSelectedWeek(Number(e.target.value))}
+            className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+            {weekOptions.map(week => (
+              <option key={week} value={week}>Tuần {week}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <p className="mb-6 text-lg text-gray-600">
+        Hiển thị kết quả cho Tuần <strong>{selectedWeek}</strong> ({weekDates.start} - {weekDates.end}).
+      </p>
+
+      {isLoading && <p>Đang tải dữ liệu...</p>}
+      {error && <p className="text-red-600">Lỗi: {error}</p>}
+
+      {!isLoading && !error && (
+        <div className="overflow-x-auto rounded-lg shadow">
+          <table className="min-w-full divide-y divide-gray-200 bg-white">
+            <thead className="bg-indigo-600">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
+                    Hạng
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
+                    Tên Lớp
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
+                    Tổng Điểm
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
+                    Điểm SĐB
+                </th>
+                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider">
+                    Điểm VP/Thưởng
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {rankings.length > 0 ? (
+                  rankings.map((team, index) => (
+                    <tr key={team.class_id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-lg font-bold text-indigo-700">
+                          {team.rank_position}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">{team.ten_lop}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-bold text-gray-900">{team.total_score}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className={`text-sm ${team.logbook_points < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {team.logbook_points}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className={`text-sm ${team.violation_points < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                           {team.violation_points}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="5" className="px-6 py-4 text-center text-gray-500">
+                      Chưa có dữ liệu xếp hạng cho tuần này.
+                    </td>
+                  </tr>
+                )}
+            </tbody>
+          </table>
         </div>
       )}
-    </header>
+    </div>
   );
-}
+};
 
-// --- Component Trang Đăng nhập ---
-function LoginPage({ onLogin, isLoading, loginError, setLoginError }) {
+
+// --- COMPONENT: UserManagementPage (Admin) ---
+// (SỬA V5.11) Nhận 'classes' từ App (Hook)
+const UserManagementPage = ({ token, onNavigate, classes }) => {
+  const [users, setUsers] = useState([]);
+  // const [classes, setClasses] = useState([]); // (SỬA V5.7) Không dùng state nội bộ
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // State cho form (Thêm/Sửa)
+  const [formMode, setFormMode] = useState('add'); // 'add' or 'edit'
+  const [editUserId, setEditUserId] = useState(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  // Sử dụng component DisplayMessage để hiển thị lỗi
-  const DisplayMessage = ({ message, type, onClose }) => {
-    const isError = type === 'error';
-    const bgColor = isError ? 'bg-red-100 border-red-400 text-red-700' : 'bg-green-100 border-green-400 text-green-700';
-    const Icon = isError ? AlertCircle : CheckSquare;
-    const title = isError ? 'Đã xảy ra lỗi:' : 'Thành công:';
+  const [fullname, setFullname] = useState('');
+  const [role, setRole] = useState('giao_vien');
+  const [chuc_vu, setChucVu] = useState('Giáo viên');
+  const [classId, setClassId] = useState('');
 
-    return (
-      <div className={`my-4 p-4 border rounded-lg flex items-center gap-2 ${bgColor}`}>
-        <Icon size={20} />
-        <div>
-          <span className="font-semibold">{title}</span> {message}
-        </div>
-        <button onClick={onClose} className="ml-auto font-bold">&times;</button>
-      </div>
-    );
+  // (SỬA LỖI V5.10) XÓA DÒNG NÀY: const ROLES = ['admin', ...]; 
+  // Nó đã được định nghĩa ở global (dòng 161)
+
+  // Tải Users
+  const loadUsers = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const usersData = await fetchData('/api/admin/users', 'GET', null, token);
+      setUsers(usersData.users || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  const resetForm = () => {
+    setFormMode('add');
+    setEditUserId(null);
+    setUsername('');
+    setPassword('');
+    setFullname('');
+    setRole('giao_vien');
+    setChucVu('Giáo viên');
+    setClassId('');
   };
 
-  const handleSubmit = (e) => {
+  const handleEditClick = (user) => {
+    setFormMode('edit');
+    setEditUserId(user.user_id);
+    setUsername(user.username);
+    setFullname(user.fullname);
+    setRole(user.role);
+    setChucVu(user.chuc_vu || '');
+    setClassId(user.class_id || '');
+    setPassword(''); // Mật khẩu luôn trống khi sửa
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!username || !password) {
-      setLoginError('Vui lòng nhập tên đăng nhập và mật khẩu.');
-      return;
+    const userData = { username, password, fullname, role, chuc_vu, class_id: classId || null };
+    
+    if (!userData.password) delete userData.password; 
+    if (!userData.class_id) userData.class_id = null; 
+    
+    try {
+        if (formMode === 'add') {
+            await fetchData('/api/admin/users', 'POST', userData, token);
+        } else {
+            await fetchData(`/api/admin/users/${editUserId}`, 'PUT', userData, token);
+        }
+        resetForm();
+        loadUsers(); // Tải lại danh sách
+    } catch (err) {
+        setError(err.message); // Hiển thị lỗi (ví dụ: Tên đăng nhập trùng)
     }
-    onLogin(username, password);
+  };
+
+  const handleDelete = async (userId) => {
+    if (window.confirm('Bạn có chắc muốn xóa người dùng này?')) {
+        try {
+            await fetchData(`/api/admin/users/${userId}`, 'DELETE', null, token);
+            loadUsers(); // Tải lại danh sách
+        } catch (err) {
+            setError(err.message);
+        }
+    }
   };
 
   return (
-    <div className="mt-10 bg-white p-8 rounded-xl shadow-2xl max-w-md mx-auto border border-gray-200">
-      <h2 className="text-3xl font-bold mb-6 text-center text-blue-700">Đăng nhập Hệ thống</h2>
-      {loginError && <DisplayMessage message={loginError} type="error" onClose={() => setLoginError(null)} />}
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="username">Tên đăng nhập</label>
-          <div className="relative">
-            <UserCheck size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 transition"
-              placeholder="ví dụ: admin"
-            />
+    <div className="p-6">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-3xl font-bold text-gray-800">
+          Quản trị Người dùng
+        </h2>
+        <a
+          href="#"
+          onClick={() => onNavigate('admin_classes')}
+          className="text-indigo-600 hover:text-indigo-800 font-medium">
+          Quản lý Lớp học &rarr;
+        </a>
+      </div>
+      
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Form Thêm/Sửa */}
+        <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow">
+          <h3 className="text-xl font-semibold mb-4">
+            {formMode === 'add' ? 'Thêm Người Dùng Mới' : 'Cập nhật Người Dùng'}
+          </h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label>Tên đăng nhập</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={formMode === 'edit'} // Không cho sửa username
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm disabled:bg-gray-100"/>
+            </div>
+            <div>
+              <label>Mật khẩu {formMode === 'edit' && '(Để trống nếu không đổi)'}</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+            </div>
+            <div>
+              <label>Họ và Tên</label>
+              <input
+                type="text"
+                value={fullname}
+                onChange={(e) => setFullname(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+            </div>
+            <div>
+              <label>Vai trò (Role)</label>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                {/* (SỬA LỖI V5.8) Dùng ROLES (toàn cục) */}
+                {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label>Chức vụ (Hiển thị)</label>
+              <input
+                type="text"
+                value={chuc_vu}
+                onChange={(e) => setChucVu(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+            </div>
+            <div>
+              <label>Lớp (nếu là Bí thư/Giáo viên CN)</label>
+              <select
+                value={classId || ''} // Đảm bảo value không phải là null
+                onChange={(e) => setClassId(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                <option value="">Không áp dụng</option>
+                {classes.map(c => (
+                  <option key={c.class_id} value={c.class_id}>{c.class_name} ({c.school_year})</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex space-x-2 mt-4">
+              <button
+                type="submit"
+                className="flex-1 py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+                {formMode === 'add' ? 'Thêm' : 'Cập nhật'}
+              </button>
+              {formMode === 'edit' && (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="flex-1 py-2 px-4 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300">
+                    Hủy
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+
+        {/* Bảng Danh sách */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow overflow-x-auto">
+          <h3 className="text-xl font-semibold mb-4">Danh sách Người dùng</h3>
+          {isLoading && <p>Đang tải...</p>}
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tên đăng nhập</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Họ tên</th>
+                {/* (SỬA LỖI V5.11) Hoán đổi 2 cột này */}
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chức vụ</th> 
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vai trò (Role)</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lớp</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hành động</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {users.map(user => (
+                <tr key={user.user_id}>
+                  <td className="px-4 py-4 whitespace-nowrap">{user.username}</td>
+                  <td className="px-4 py-4 whitespace-nowrap">{user.fullname}</td>
+                  {/* (SỬA LỖI V5.11) Hoán đổi 2 cột này */}
+                  <td className="px-4 py-4 whitespace-nowrap">{user.chuc_vu}</td> 
+                  <td className="px-4 py-4 whitespace-nowrap">{user.role}</td>
+                  <td className="px-4 py-4 whitespace-nowrap">{classes.find(c => c.class_id === user.class_id)?.class_name || 'N/A'}</td>
+                  <td className="px-4 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                    <button onClick={() => handleEditClick(user)} className="text-indigo-600 hover:text-indigo-900">Sửa</button>
+                    <button onClick={() => handleDelete(user.user_id)} className="text-red-600 hover:text-red-900">Xóa</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- COMPONENT: ClassManagementPage (Admin) ---
+// (SỬA V5.7) Nhận 'classes' và 'loadClasses' từ App (Hook)
+const ClassManagementPage = ({ token, onNavigate, classes, loadClasses }) => {
+  const [isLoading, setIsLoading] = useState(false); 
+  const [error, setError] = useState(null);
+
+  // Form state
+  const [className, setClassName] = useState('');
+  const [gradeLevel, setGradeLevel] = useState(10);
+  const [schoolYear, setSchoolYear] = useState(dayjs().format('YYYY') + '-' + (dayjs().year() + 1)); 
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    try {
+        await fetchData('/api/admin/classes', 'POST', { 
+            class_name: className, 
+            grade_level: gradeLevel,
+            school_year: schoolYear 
+        }, token);
+        setClassName('');
+        setGradeLevel(10);
+        setError(null); // Xóa lỗi cũ
+        loadClasses(); // (SỬA V5.7) Gọi hàm refresh từ App
+    } catch (err) {
+        setError(err.message); // Hiển thị lỗi (ví dụ: Trùng lặp)
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  const handleDelete = async (classId) => {
+    if (window.confirm('Bạn có chắc muốn xóa lớp này? (Tất cả TKB và Lỗi liên quan sẽ bị xóa!)')) {
+        try {
+            await fetchData(`/api/admin/classes/${classId}`, 'DELETE', null, token);
+            loadClasses(); // (SỬA V5.7) Gọi hàm refresh từ App
+        } catch (err) {
+            setError(err.message);
+        }
+    }
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-3xl font-bold text-gray-800">
+          Quản lý Lớp học
+        </h2>
+        <a
+          href="#"
+          onClick={() => onNavigate('admin_users')}
+          className="text-indigo-600 hover:text-indigo-800 font-medium">
+          &larr; Quay lại Quản trị Người dùng
+        </a>
+      </div>
+      
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Form Thêm */}
+        <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow">
+          <h3 className="text-xl font-semibold mb-4">Thêm Lớp Mới</h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label>Tên Lớp (VD: 10A1)</label>
+              <input
+                type="text"
+                value={className}
+                onChange={(e) => setClassName(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm" required/>
+            </div>
+            <div>
+              <label>Năm học (VD: 2024-2025)</label>
+              <input
+                type="text"
+                value={schoolYear}
+                onChange={(e) => setSchoolYear(e.target.value)}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm" required/>
+            </div>
+            <div>
+              <label>Khối</label>
+              <select
+                value={gradeLevel}
+                onChange={(e) => setGradeLevel(Number(e.target.value))}
+                className="mt-1 w-full rounded-md border-gray-300 shadow-sm" required>
+                <option value={10}>Khối 10</option>
+                <option value={11}>Khối 11</option>
+                <option value={12}>Khối 12</option>
+              </select>
+            </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+                {isLoading ? 'Đang xử lý...' : 'Thêm Lớp'}
+            </button>
+          </form>
+        </div>
+
+        {/* Bảng Danh sách Lớp học */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow overflow-x-auto">
+          <h3 className="text-xl font-semibold mb-4">Danh sách Lớp học</h3>
+          {/* (SỬA V5.7) Bỏ isLoading (đã chuyển ra App) */}
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tên Lớp</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Khối</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Năm học</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hành động</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {classes.map(c => (
+                <tr key={c.class_id}>
+                  <td className="px-4 py-4 whitespace-nowrap">{c.class_name}</td>
+                  <td className="px-4 py-4 whitespace-nowrap">{c.grade_level}</td>
+                  <td className="px-4 py-4 whitespace-nowrap">{c.school_year}</td>
+                  <td className="px-4 py-4 whitespace-nowrap text-sm font-medium">
+                    <button onClick={() => handleDelete(c.class_id)} className="text-red-600 hover:text-red-900">Xóa</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// --- COMPONENT: ScheduleManagementPage (Đoàn Trường) ---
+// (SỬA V5.7) Nhận 'classes' từ App (Hook)
+const ScheduleManagementPage = ({ token, classes }) => {
+  const [users, setUsers] = useState([]); // Danh sách giáo viên
+  const [schedules, setSchedules] = useState([]);
+  const [selectedClass, setSelectedClass] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  const [currentSchoolYear, setCurrentSchoolYear] = useState(dayjs().format('YYYY') + '-' + (dayjs().year() + 1));
+  const [semester, setSemester] = useState(1);
+  const [filteredClasses, setFilteredClasses] = useState([]);
+
+  // State cho form
+  const [dayOfWeek, setDayOfWeek] = useState(2); // Thứ Hai
+  const [periodNumber, setPeriodNumber] = useState(1);
+  const [subjectName, setSubjectName] = useState('');
+  const [teacherId, setTeacherId] = useState('');
+
+  // Tải Users (Teachers)
+  const loadUsers = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const userData = await fetchData('/api/admin/users', 'GET', null, token); // Lấy tất cả user
+      setUsers(userData.users.filter(u => u.role === 'giao_vien' || u.role === 'ban_giam_hieu' || u.role === 'admin') || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]);
+
+  // (SỬA V5.7) Lọc lại lớp học khi Năm học hoặc danh sách lớp thay đổi
+  useEffect(() => {
+    const filtered = classes.filter(c => c.school_year === currentSchoolYear);
+    setFilteredClasses(filtered);
+    if (filtered.length > 0 && !filtered.find(c => c.class_id === selectedClass)) {
+      setSelectedClass(filtered[0].class_id);
+    } else if (filtered.length === 0) {
+      setSelectedClass('');
+    }
+  }, [classes, currentSchoolYear, selectedClass]);
+
+
+  const loadSchedule = useCallback(async () => {
+    if (!selectedClass) {
+        setSchedules([]); // Xóa TKB cũ nếu không chọn lớp
+        return;
+    };
+    try {
+      const data = await fetchData(`/api/schedules/class/${selectedClass}?semester=${semester}&school_year=${currentSchoolYear}`, 'GET', null, token);
+      setSchedules(data.schedules || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [token, selectedClass, semester, currentSchoolYear]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]); 
+
+  useEffect(() => {
+    loadSchedule();
+  }, [loadSchedule]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!teacherId) {
+        setError("Vui lòng chọn giáo viên.");
+        return;
+    }
+    try {
+        await fetchData('/api/schedules', 'POST', {
+            class_id: selectedClass,
+            semester,
+            school_year: currentSchoolYear,
+            day_of_week: dayOfWeek,
+            period_number: periodNumber,
+            subject_name: subjectName,
+            teacher_id: teacherId
+        }, token);
+        loadSchedule(); // Tải lại TKB
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  const handleDelete = async (timetableId) => {
+    try {
+        await fetchData(`/api/schedules/${timetableId}`, 'DELETE', null, token);
+        loadSchedule();
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  const TKB_GRID = Array.from({ length: 10 }, (_, period) => // 10 tiết
+    Array.from({ length: 7 }, (_, day) => { // 7 ngày (CN-T7)
+      const dayOfWeekIdx = day + 1; // 1 (CN) -> 7 (T7)
+      const periodNumIdx = period + 1;
+      return schedules.find(s => s.day_of_week === dayOfWeekIdx && s.period_number === periodNumIdx) || null;
+    })
+  );
+  
+  const DAY_NAMES = ["", "CN", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+
+  return (
+    <div className="p-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+          Quản lý Thời Khóa Biểu
+      </h2>
+      
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Form Thêm TKB */}
+        <div className="lg:col-span-1 bg-white p-6 rounded-lg shadow h-fit">
+          <h3 className="text-xl font-semibold mb-4">Thêm Tiết học</h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label>Năm học</label>
+                <input type="text" value={currentSchoolYear} onChange={(e) => setCurrentSchoolYear(e.target.value)} className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+              </div>
+              <div>
+                <label>Học kỳ</label>
+                <select value={semester} onChange={(e) => setSemester(Number(e.target.value))} className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                  <option value={1}>Học Kỳ 1</option>
+                  <option value={2}>Học Kỳ 2</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label>Lớp (theo năm học trên)</label>
+              <select value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)} className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                {filteredClasses.length > 0 ? 
+                    filteredClasses.map(c => <option key={c.class_id} value={c.class_id}>{c.class_name}</option>) :
+                    <option>Không có lớp cho năm học này</option>
+                }
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label>Thứ</label>
+                <select value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))} className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                  {DAY_NAMES.map((name, index) => index > 1 ? <option key={index} value={index}>{name}</option> : null)}
+                </select>
+              </div>
+              <div>
+                <label>Tiết</label>
+                <select value={periodNumber} onChange={(e) => setPeriodNumber(Number(e.target.value))} className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                  {Array.from({ length: 10 }, (_, i) => i + 1).map(p => <option key={p} value={p}>Tiết {p}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label>Môn học</label>
+              <input type="text" value={subjectName} onChange={(e) => setSubjectName(e.target.value)} className="mt-1 w-full rounded-md border-gray-300 shadow-sm" required/>
+            </div>
+            <div>
+              <label>Giáo viên</label>
+              <select value={teacherId} onChange={(e) => setTeacherId(e.target.value)} className="mt-1 w-full rounded-md border-gray-300 shadow-sm" required>
+                <option value="">Chọn giáo viên</option>
+                {users.map(u => <option key={u.user_id} value={u.user_id}>{u.fullname}</option>)}
+              </select>
+            </div>
+            <button type="submit" className="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+                Lưu Tiết học
+            </button>
+          </form>
+        </div>
+
+        {/* Bảng TKB */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow overflow-x-auto">
+          <h3 className="text-xl font-semibold mb-4">TKB Lớp: {classes.find(c => c.class_id === parseInt(selectedClass))?.class_name}</h3>
+          {isLoading && <p>Đang tải...</p>}
+          <table className="min-w-full border-collapse border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="border border-gray-300 px-2 py-2">Tiết</th>
+                {DAY_NAMES.map((name, index) => index > 1 ? <th key={index} className="border border-gray-300 px-2 py-2">{name}</th> : null)}
+              </tr>
+            </thead>
+            <tbody className="text-center">
+              {TKB_GRID.map((row, periodIdx) => (
+                <tr key={periodIdx}>
+                  <td className="border border-gray-300 px-2 py-2 font-bold">Tiết {periodIdx + 1}</td>
+                  {row.slice(2).map((cell, dayIdx) => ( // Bỏ qua CN (0), T2 (1) -> slice(2)
+                    <td key={dayIdx} className="border border-gray-300 px-2 py-2 h-20 relative">
+                      {cell && (
+                        <div className="text-sm">
+                          <p className="font-bold">{cell.subject_name}</p>
+                          <p className="text-xs">{users.find(u => u.user_id === cell.teacher_id)?.fullname}</p>
+                          <button
+                            onClick={() => handleDelete(cell.timetable_id)}
+                            className="absolute top-1 right-1 text-red-500 hover:text-red-700 text-xs opacity-50 hover:opacity-100">
+                            (Xóa)
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// --- COMPONENT: LogbookPage (Sổ Đầu Bài - Giáo viên, BGH) ---
+const LogbookPage = ({ token, user, allRules }) => {
+  const [mySchedule, setMySchedule] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [currentWeek, setCurrentWeek] = useState(getWeekNumber(new Date()));
+  const [selectedWeek, setSelectedWeek] = useState(currentWeek);
+
+  // State cho Modal
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedEntry, setSelectedEntry] = useState(null);
+  const [lessonContent, setLessonContent] = useState('');
+  const [notes, setNotes] = useState('');
+  const [attendance, setAttendance] = useState('');
+  const [selectedRuleIds, setSelectedRuleIds] = useState(new Set()); 
+
+  const inClassRules = useMemo(() => {
+    return allRules.filter(r => r.is_in_class_violation === 0);
+  }, [allRules]);
+
+  // Tải Lịch dạy (Logbook)
+  const loadMyLogbook = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await fetchData(`/api/logbook/my-schedule?week_number=${selectedWeek}`, 'GET', null, token);
+      setMySchedule(data.schedule || []);
+    } catch (err) { 
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token, selectedWeek]);
+
+  useEffect(() => {
+    loadMyLogbook();
+  }, [loadMyLogbook]);
+
+  const openModal = (entry) => {
+    setSelectedEntry(entry);
+    setLessonContent(entry.lesson_content || '');
+    setNotes(entry.notes || '');
+    setAttendance(entry.attendance || '');
+    setSelectedRuleIds(new Set(entry.violations.map(v => v.rule_id)));
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedEntry(null);
+  };
+
+  const handleCheckboxChange = (ruleId) => {
+      setSelectedRuleIds(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(ruleId)) {
+              newSet.delete(ruleId);
+          } else {
+              newSet.add(ruleId);
+          }
+          return newSet;
+      });
+  };
+
+  const handleSubmitLog = async (e) => {
+    e.preventDefault();
+    const logData = {
+      timetable_id: selectedEntry.timetable_id,
+      week_number: selectedWeek,
+      lesson_content,
+      notes,
+      attendance,
+      selectedRuleIds: Array.from(selectedRuleIds), 
+    };
+    try {
+        await fetchData('/api/logbook/sign', 'POST', logData, token);
+        closeModal();
+        loadMyLogbook(); // Tải lại
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  const weekOptions = Array.from({ length: 52 }, (_, i) => i + 1);
+
+  const scheduleByDay = useMemo(() => {
+    return mySchedule.reduce((acc, entry) => {
+      const day = entry.day_of_week;
+      if (!acc[day]) {
+        acc[day] = [];
+      }
+      acc[day].push(entry);
+      return acc;
+    }, {});
+  }, [mySchedule]);
+
+  const DAY_NAMES = ["", "Chủ Nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+
+  return (
+    <div className="p-6">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-3xl font-bold text-gray-800">
+          Sổ Đầu Bài (Lịch dạy của tôi)
+        </h2>
+        <div className="flex items-center space-x-4">
+          <span className="text-sm font-medium text-gray-600">
+            Chọn tuần:
+          </span>
+          <select
+            value={selectedWeek}
+            onChange={(e) => setSelectedWeek(Number(e.target.value))}
+            className="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+            {weekOptions.map(week => (
+              <option key={week} value={week}>Tuần {week}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {isLoading && <p>Đang tải...</p>}
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+
+      {!isLoading && !error && (
+        <div className="space-y-6">
+          {Object.keys(scheduleByDay).sort((a, b) => a - b).map(dayIndex => (
+            <div key={dayIndex}>
+              <h3 className="text-xl font-semibold mb-2 text-indigo-700">
+                {DAY_NAMES[dayIndex]}
+              </h3>
+              <div className="overflow-x-auto rounded-lg shadow bg-white">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tiết</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lớp</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Môn học</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Trạng thái</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hành động</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {scheduleByDay[dayIndex].sort((a, b) => a.period_number - b.period_number).map(entry => (
+                      <tr key={entry.timetable_id}>
+                        <td className="px-4 py-4">Tiết {entry.period_number}</td>
+                        <td className="px-4 py-4">{entry.class_name}</td>
+                        <td className="px-4 py-4">{entry.subject_name}</td>
+                        <td className="px-4 py-4">
+                          {entry.is_signed ? (
+                            <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                              Đã ký (GV: {entry.signer_fullname})
+                            </span>
+                          ) : (
+                            <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                              Chưa ký
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-4">
+                          <button
+                            onClick={() => openModal(entry)}
+                            // (SỬA V5.7) Sửa logic kiểm tra: grader_id
+                            disabled={entry.is_signed && entry.grader_id !== user.user_id && user.role !== 'ban_giam_hieu' && user.role !== 'admin'}
+                            className="py-2 px-4 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed">
+                            {entry.is_signed ? 'Xem/Sửa' : 'Ký sổ & Đánh giá'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {Object.keys(scheduleByDay).length === 0 && (
+            <p className="text-center text-gray-500 mt-10">
+                Không có lịch dạy trong tuần này.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Modal Ký Sổ (SỬA V5.1 - Dùng Checkbox) */}
+      {isModalOpen && selectedEntry && (
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <h3 className="text-xl font-semibold mb-4">
+                Đánh giá Tiết học (Tuần {selectedWeek})
+            </h3>
+            <p className="mb-4">
+                Lớp <strong>{selectedEntry.class_name}</strong> - Tiết <strong>{selectedEntry.period_number}</strong> - Môn <strong>{selectedEntry.subject_name}</strong>
+            </p>
+            <form onSubmit={handleSubmitLog} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium">Sĩ số / Vắng</label>
+                <input
+                  type="text"
+                  value={attendance}
+                  onChange={(e) => setAttendance(e.target.value)}
+                  placeholder="VD: 30/30 (Vắng: A, B)"
+                  className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+              </div>
+              <div>
+                <label className="block text-sm font-medium">Nội dung bài dạy</label>
+                <textarea
+                  rows="3"
+                  value={lessonContent}
+                  onChange={(e) => setLessonContent(e.target.value)}
+                  className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                </textarea>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium">Xếp loại / Vi phạm trong giờ (Loại 0)</label>
+                <div className="mt-2 p-3 border rounded-md max-h-48 overflow-y-auto bg-gray-50 space-y-2">
+                    {inClassRules.length > 0 ? inClassRules.map(rule => (
+                        <label key={rule.violation_type_id} className="flex items-center">
+                            <input 
+                                type="checkbox"
+                                checked={selectedRuleIds.has(rule.violation_type_id)}
+                                onChange={() => handleCheckboxChange(rule.violation_type_id)}
+                                className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                            />
+                            <span className="ml-2 text-sm text-gray-700">
+                                {rule.description} ({rule.points_deducted} điểm)
+                            </span>
+                        </label>
+                    )) : <p className="text-sm text-gray-500">Không tìm thấy quy tắc (Loại 0) trong CSDL.</p>}
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium">Ghi chú thêm</label>
+                <textarea
+                  rows="2"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+                </textarea>
+              </div>
+              <div className="flex justify-end space-x-2 pt-4">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="py-2 px-4 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300">
+                    Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+                    Xác nhận Ký sổ
+                </button>
+              </div>
+            </form>
           </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+// --- COMPONENT: ViolationForm (Cờ Đỏ) ---
+// (SỬA V5.4) Hoàn tác: Dùng 1 Dropdown Lớp (hiển thị cả năm học)
+const ViolationForm = ({ token, user, allRules, classes }) => {
+  // const [classes, setClasses] = useState([]); // (SỬA V5.7) Xóa
+  const [isLoading, setIsLoading] = useState(false); // (SỬA V5.7) Xóa
+  const [error, setError] = useState(null);
+
+  // (MỚI V5.1) Lọc quy tắc Cờ Đỏ (Loại 1 và 2)
+  const violationRules = useMemo(() => {
+    return allRules.filter(r => r.is_in_class_violation === 1 || r.is_in_class_violation === 2);
+  }, [allRules]);
+
+  // Form state
+  const [classId, setClassId] = useState(classes.length > 0 ? classes[0].class_id : ''); // (SỬA V5.7) Set mặc định
+  const [violationRuleId, setViolationRuleId] = useState(''); // (SỬA V5.1) Dùng ID
+  const [description, setDescription] = useState('');
+  const [violationDate, setViolationDate] = useState(dayjs().format('YYYY-MM-DD'));
+  const [weekNumber, setWeekNumber] = useState(getWeekNumber(new Date()));
+
+  // (SỬA V5.7) Xóa loadClassesData (đã chuyển ra App)
+
+  // (MỚI V5.1) Set ID mặc định khi quy tắc được tải
+  useEffect(() => {
+      if (violationRules.length > 0 && !violationRuleId) {
+          setViolationRuleId(violationRules[0].violation_type_id);
+      }
+  }, [violationRules, violationRuleId]);
+  
+  // (MỚI V5.7) Set classId mặc định khi classes tải xong
+  useEffect(() => {
+      if (classes.length > 0 && !classId) {
+          setClassId(classes[0].class_id);
+      }
+  }, [classes, classId]);
+
+  const handleDateChange = (date) => {
+    setViolationDate(date);
+    setWeekNumber(getWeekNumber(date));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null); // (MỚI V5.7) Xóa lỗi cũ
+    if (!violationRuleId) {
+        setError("Vui lòng chọn một loại lỗi vi phạm.");
+        return;
+    }
+    if (!classId) {
+        setError("Vui lòng chọn lớp.");
+        return;
+    }
+    const reportData = {
+      class_id: classId,
+      violation_type_id: violationRuleId, // (SỬA V5.1) Gửi ID
+      description,
+      violation_date: violationDate,
+      week_number: weekNumber,
+    };
+    try {
+        await fetchData('/api/violations/report', 'POST', reportData, token);
+        alert('Đã gửi báo cáo thành công!');
+        // Reset form
+        setDescription('');
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-lg mx-auto bg-white rounded-lg shadow mt-10">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+          Gửi Báo Cáo Vi Phạm (Cờ Đỏ/Thưởng)
+      </h2>
+      {isLoading && <p>Đang tải...</p>}
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+      
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* (SỬA V5.4) Hoàn tác Dropdown Lớp */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="password">Mật khẩu</label>
-          <div className="relative">
-            <Shield size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-            <input
-              type="password"
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500 transition"
-              placeholder="••••••••"
-            />
-          </div>
+          <label className="block text-sm font-medium">Lớp vi phạm</label>
+          <select
+            value={classId}
+            onChange={(e) => setClassId(e.target.value)}
+            className="mt-1 w-full rounded-md border-gray-300 shadow-sm"
+            disabled={isLoading || classes.length === 0}>
+            {classes.length > 0 ?
+                classes.map(c => <option key={c.class_id} value={c.class_id}>{c.class_name} ({c.school_year})</option>) :
+                <option value="">Đang tải lớp...</option>
+            }
+          </select>
+        </div>
+        
+        <div>
+          <label className="block text-sm font-medium">Ngày vi phạm</label>
+          <input
+            type="date"
+            value={violationDate}
+            onChange={(e) => handleDateChange(e.target.value)}
+            className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
+        </div>
+        <p className="text-sm text-gray-500">Tuần {weekNumber}</p>
+        
+        {/* (SỬA V5.1) Dropdown động */}
+        <div>
+          <label className="block text-sm font-medium">Loại vi phạm (Lỗi Ngoài giờ & Thưởng)</label>
+          <select
+            value={violationRuleId}
+            onChange={(e) => setViolationRuleId(e.target.value)}
+            className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+            {violationRules.length > 0 ? violationRules.map(rule => (
+                <option key={rule.violation_type_id} value={rule.violation_type_id}>
+                    {rule.description} ({rule.points_deducted} điểm)
+                </option>
+            )) : <option>Đang tải quy tắc...</option>}
+          </select>
+        </div>
+        
+        <div>
+          <label className="block text-sm font-medium">Mô tả chi tiết (Tên HS, địa điểm...)</label>
+          <textarea
+            rows="3"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="VD: Em A, Em B đi trễ 5 phút..."
+            className="mt-1 w-full rounded-md border-gray-300 shadow-sm">
+          </textarea>
+        </div>
+        <button type="submit" className="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+          Gửi Báo Cáo
+        </button>
+      </form>
+    </div>
+  );
+};
+
+// --- COMPONENT: ViolationConfirmationPage (Bí thư) ---
+// (SỬA V5.1) Hiển thị tên lỗi động
+const ViolationConfirmationPage = ({ token, user }) => {
+  const [reports, setReports] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const loadMyClassReports = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await fetchData('/api/violations/my-class', 'GET', null, token);
+      setReports(data.reports || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    loadMyClassReports();
+  }, [loadMyClassReports]);
+
+  const handleAction = async (reportId, action) => {
+    const feedback = action === 'deny' ? prompt('Lý do từ chối (bắt buộc):') : null;
+    if (action === 'deny' && !feedback) {
+      return; // Hủy nếu không nhập lý do
+    }
+    try {
+        await fetchData(`/api/violations/${reportId}/confirm`, 'POST', { action, feedback }, token);
+        loadMyClassReports();
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  if (!user.class_id) {
+    return <p className="p-6 text-red-600">Tài khoản của bạn chưa được gán vào lớp nào. Vui lòng liên hệ Admin.</p>
+  }
+
+  return (
+    <div className="p-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+          Xác nhận Vi phạm Lớp
+      </h2>
+      {isLoading && <p>Đang tải...</p>}
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+      
+      <div className="space-y-4">
+        {reports.length > 0 ? (
+          reports.map(report => (
+            <div key={report.report_id} className="bg-white p-4 rounded-lg shadow flex justify-between items-center">
+              <div>
+                <p className="text-sm text-gray-500">
+                  {dayjs(report.report_date).format('DD/MM/YYYY')} (Tuần {report.week_number}) - CĐ: {report.reporter_name}
+                </p>
+                <p className="text-lg font-semibold">
+                    {report.rule_description} 
+                    <span className="text-base font-normal text-red-600"> ({report.rule_points} điểm)</span>
+                </p>
+                <p className="text-gray-700">{report.description_details}</p>
+              </div>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => handleAction(report.report_id, 'confirm')}
+                  className="py-2 px-4 bg-green-500 text-white rounded-md hover:bg-green-600 text-sm">
+                  Đúng
+                </button>
+                <button
+                  onClick={() => handleAction(report.report_id, 'deny')}
+                  className="py-2 px-4 bg-red-500 text-white rounded-md hover:bg-red-600 text-sm">
+                  Sai
+                </button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <p className="text-gray-500">Lớp bạn không có báo cáo vi phạm nào cần xác nhận.</p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// --- COMPONENT: ViolationApprovalPage (Đoàn trường) ---
+// (SỬA V5.1) Hiển thị tên lỗi động
+const ViolationApprovalPage = ({ token }) => {
+  const [reports, setReports] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState('pending_approval'); // 'pending_approval' or 'denied_by_monitor'
+
+  const loadReports = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const url = filter === 'pending_approval' ? '/api/violations/pending-approval' : '/api/violations/denied-by-monitor';
+      const data = await fetchData(url, 'GET', null, token);
+      setReports(data.reports || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token, filter]);
+
+  useEffect(() => {
+    loadReports();
+  }, [loadReports]);
+
+  const handleApproval = async (reportId, action) => {
+    try {
+        await fetchData(`/api/violations/${reportId}/approve`, 'POST', { action }, token);
+        loadReports();
+    } catch (err) {
+        setError(err.message);
+    }
+  };
+
+  return (
+    <div className="p-6">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+          Duyệt Lỗi Vi Phạm
+      </h2>
+      <div className="mb-4 border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => setFilter('pending_approval')}
+            className={`whitespace-nowrap pb-4 px-1 border-b-2 font-medium text-sm ${
+              filter === 'pending_approval' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}>
+            Chờ duyệt (Đã xác nhận)
+          </button>
+          <button
+            onClick={() => setFilter('denied_by_monitor')}
+            className={`whitespace-nowrap pb-4 px-1 border-b-2 font-medium text-sm ${
+              filter === 'denied_by_monitor' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}>
+            Bí thư Từ chối (Cần xem xét)
+          </button>
+        </nav>
+      </div>
+
+      {isLoading && <p>Đang tải...</p>}
+      {error && <p className="text-red-600 bg-red-100 p-3 rounded-md mb-4">{error}</p>}
+
+      <div className="space-y-4">
+        {reports.length > 0 ? (
+          reports.map(report => (
+            <div key={report.report_id} className="bg-white p-4 rounded-lg shadow flex justify-between items-start">
+              <div>
+                <p className="text-sm text-gray-500">
+                  {dayjs(report.report_date).format('DD/MM/YYYY')} (Tuần {report.week_number}) - Lớp <strong>{report.class_name}</strong>
+                </p>
+                <p className="text-lg font-semibold">
+                    {report.rule_description} 
+                    <span className="text-base font-normal text-red-600"> ({report.rule_points} điểm)</span>
+                </p>
+                <p className="text-gray-700 mb-2">CĐ báo cáo: {report.description_details}</p>
+                {report.secretary_response && (
+                  <p className="text-sm text-red-600 font-medium bg-red-50 p-2 rounded">
+                    Phản hồi Bí thư: {report.secretary_response}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 flex-shrink-0 mt-2 sm:mt-0">
+                <button
+                  onClick={() => handleApproval(report.report_id, 'approve')}
+                  className="py-2 px-4 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm">
+                  Duyệt (Trừ/Cộng điểm)
+                </button>
+                <button
+                  onClick={() => handleApproval(report.report_id, 'reject')}
+                  className="py-2 px-4 bg-gray-500 text-white rounded-md hover:bg-gray-600 text-sm">
+                  Hủy lỗi
+                </button>
+              </div>
+            </div>
+          ))
+        ) : (
+          <p className="text-gray-500">Không có báo cáo nào trong mục này.</p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
+// --- COMPONENT: RankingCalculationPage (Admin/BGH) ---
+const RankingCalculationPage = ({ token }) => {
+  const [weekNumber, setWeekNumber] = useState(getWeekNumber(new Date()));
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState(null); // { type, text }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const data = await fetchData('/api/calculate-ranking', 'POST', { week_number: weekNumber }, token);
+      setMessage({ type: 'success', text: data.message });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-lg mx-auto bg-white rounded-lg shadow mt-10">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+          Tính Toán Xếp Hạng Tuần
+      </h2>
+      
+      {message && (
+        <p className={`p-3 rounded-md mb-4 ${message.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+          {message.text}
+        </p>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium">Chọn Tuần để Tính toán</label>
+          <input
+            type="number"
+            min="1"
+            max="53"
+            value={weekNumber}
+            onChange={(e) => setWeekNumber(Number(e.target.value))}
+            className="mt-1 w-full rounded-md border-gray-300 shadow-sm"/>
         </div>
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg shadow-lg font-semibold hover:bg-blue-700 transition duration-200 disabled:bg-gray-400"
-        >
-          {isLoading ? <Loader2 className="animate-spin" size={20} /> : <LogIn size={20} />}
-          {isLoading ? 'Đang xử lý...' : 'Đăng nhập'}
+          className="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
+          {isLoading ? 'Đang tính toán...' : 'Bắt đầu Tính Toán & Chốt Điểm'}
         </button>
       </form>
-      <p className="text-center text-xs text-gray-500 mt-6">
-        Lưu ý: Bạn phải tạo tài khoản admin đầu tiên bằng Postman qua API /api/register.
+      <p className="text-sm text-gray-500 mt-4">
+          Lưu ý: Hành động này sẽ tính toán lại toàn bộ điểm SĐB và Vi phạm (đã duyệt) của tuần đã chọn, sau đó lưu kết quả vào Bảng Xếp Hạng.
       </p>
     </div>
   );
-}
+};
 
 
-// --- Component Sidebar ---
-function Sidebar({ user, currentPage, setCurrentPage }) {
-  const { role } = user;
-
-  const allLinks = [
-    { name: 'Dashboard (BXH)', icon: BarChart2, page: 'dashboard', roles: ['public', 'admin', 'ban_giam_hieu', 'doan_truong', 'co_do', 'bi_thu', 'giao_vien'] },
-    { name: 'Sổ Đầu Bài', icon: BookOpen, page: 'logbook', roles: ['giao_vien', 'ban_giam_hieu'] },
-    { name: 'Gửi Báo cáo (Cờ đỏ)', icon: Flag, page: 'report_violation', roles: ['co_do'] },
-    { name: 'Xác nhận VP (Bí thư)', icon: CheckSquare, page: 'approve_violation', roles: ['bi_thu'] },
-    { name: 'Quản lý VP (Đoàn trường)', icon: Edit3, page: 'manage_violation', roles: ['doan_truong'] },
-    { name: 'Quản lý Thời Khóa Biểu', icon: Calendar, page: 'manage_schedule', roles: ['doan_truong'] }, // Đổi tên từ 'schedule' thành 'manage_schedule'
-    { name: 'Thời Khóa Biểu Lớp/GV', icon: Clock, page: 'view_schedule', roles: ['giao_vien', 'bi_thu', 'ban_giam_hieu'] }, 
-    { name: 'Quản lý Giáo viên', icon: UserCheck, page: 'manage_teachers', roles: ['ban_giam_hieu'] },
-    { name: 'Quản trị Người dùng', icon: Settings, page: 'admin', roles: ['admin'] },
-  ];
-
-  const adminLinks = [
-    { name: 'Quản lý Người dùng', icon: Settings, page: 'admin', roles: ['admin'] },
-    { name: 'Quản lý Lớp học', icon: Layers, page: 'manage_classes', roles: ['admin'] },
-  ];
-
-  const getFilteredLinks = () => {
-    let links = allLinks.filter(link => 
-      link.roles.includes(role)
-    );
-    
-    // Nếu là admin, hiển thị link quản trị chi tiết
-    if (role === 'admin') {
-      links = [...links.filter(link => link.page !== 'admin'), ...adminLinks];
+// --- COMPONENT CHÍNH: App ---
+export default function App() {
+  // 1. State Xác thực (Auth)
+  const [token, setToken] = useState(() => localStorage.getItem('token'));
+  const [user, setUser] = useState(() => {
+    try {
+        return JSON.parse(localStorage.getItem('appUser'));
+    } catch {
+        return null;
     }
-    
-    return links;
-  };
+  });
   
-  const filteredLinks = getFilteredLinks();
+  // 2. State Điều hướng (Navigation)
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  
+  // 3. (MỚI V5.1) State Chung cho Quy tắc
+  const { allRules, inClassRules, outOfClassRules, bonusRules, rulesError, isLoadingRules } = useRules(token);
+  // (MỚI V5.7) State Chung cho Lớp học
+  const { classes, classesError, isLoadingClasses, refreshClasses } = useClasses(token);
 
-  return (
-    <div className="w-64 bg-white p-6 shadow-xl h-screen sticky top-0 border-r border-gray-200">
-      <h2 className="text-xl font-bold text-blue-800 mb-8">Xin chào, {user.fullname.split(' ')[0]}!</h2>
-      <nav className="space-y-2">
-        {filteredLinks.map(link => {
-          const Icon = link.icon;
-          const isActive = currentPage === link.page;
-          return (
-            <button
-              key={link.page}
-              onClick={() => setCurrentPage(link.page)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition duration-150 ${
-                isActive
-                  ? 'bg-blue-600 text-white font-semibold shadow-md'
-                  : 'text-gray-700 hover:bg-blue-50 hover:text-blue-600'
-              }`}
-            >
-              <Icon size={20} />
-              {link.name}
-            </button>
-          );
-        })}
-      </nav>
-      {user.role === 'admin' && (
-        <p className="mt-8 text-sm text-gray-500 border-t pt-4">Phiên làm việc: {user.role.toUpperCase()}</p>
-      )}
-    </div>
-  );
-}
+  // 4. Xử lý Đăng nhập / Đăng xuất
+  const handleLoginSuccess = (newToken, newUser) => {
+    setToken(newToken);
+    setUser(newUser);
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('appUser', JSON.stringify(newUser)); 
+    setCurrentPage('dashboard'); 
+  };
 
-// --- Component Nội dung chính (Chuyển trang) ---
-function MainContent({ user, token, currentPage, rankings }) {
-  switch (currentPage) {
-    case 'dashboard':
-      return <PublicDashboard rankings={rankings} />;
-    case 'logbook':
-      return <LogbookPage user={user} token={token} />;
-    case 'report_violation':
-      return <CoDoReportPage user={user} token={token} />;
-    case 'approve_violation':
-      return <BiThuApprovePage user={user} token={token} />;
-    case 'manage_violation':
-      return <DoanTruongManagePage user={user} token={token} />;
-    case 'manage_schedule':
-      return <ScheduleManagementPage user={user} token={token} />;
-    case 'view_schedule':
-        return <SchedulePage user={user} token={token} />;
-    case 'manage_teachers':
-      return <BGHManagePage user={user} token={token} />;
-    case 'admin':
-      return <AdminPage user={user} token={token} />; 
-    case 'manage_classes':
-      return <ClassManagementPage user={user} token={token} />; // Trang quản lý lớp học mới
-    default:
-      return <PublicDashboard rankings={rankings} />;
-  }
-}
+  const handleLogout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('token');
+    localStorage.removeItem('appUser');
+    setCurrentPage('login'); 
+  };
 
-// --- Component hiển thị thông báo ---
-const DisplayMessage = ({ message, type, onClose }) => {
-  const isError = type === 'error';
-  const bgColor = isError ? 'bg-red-100 border-red-400 text-red-700' : 'bg-green-100 border-green-400 text-green-700';
-  const Icon = isError ? AlertCircle : CheckSquare;
-  const title = isError ? 'Lỗi:' : 'Thành công:';
-
-  return (
-    <div className={`my-4 p-4 border rounded-lg flex items-center gap-2 ${bgColor}`}>
-      <Icon size={20} />
-      <div>
-        <span className="font-semibold">{title}</span> {message}
-      </div>
-      <button onClick={onClose} className="ml-auto font-bold">&times;</button>
-    </div>
-  );
-};
-
-
-// --- TRANG: ADMIN - QUẢN TRỊ NGƯỜI DÙNG (Giữ nguyên) ---
-function AdminPage({ user, token }) {
-    const [users, setUsers] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState(null); // { type: 'success' | 'error', text: string }
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingUser, setEditingUser] = useState(null); // null = thêm mới
-
-    // --- Hàm Tải danh sách người dùng ---
-    const fetchUsers = async () => {
-        setLoading(true);
-        setMessage(null);
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/users`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            });
-            const data = await response.json();
-            if (data.success) {
-                setUsers(data.users);
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối hoặc server: Không thể tải danh sách người dùng.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (token) {
-            fetchUsers();
-        }
-    }, [token]);
-
-    // --- Hàm Thêm/Sửa người dùng ---
-    const handleSaveUser = async (formData) => {
-        setMessage(null);
-        setLoading(true);
-        const method = formData.user_id ? 'PUT' : 'POST';
-        const url = formData.user_id 
-          ? `${API_BASE_URL}/admin/users/${formData.user_id}` 
-          : `${API_BASE_URL}/admin/users`;
-        
-        // Loại bỏ password nếu là PUT và không có giá trị
-        const bodyData = { ...formData };
-        if (method === 'PUT' && !bodyData.password) {
-            delete bodyData.password;
-        }
-
-        try {
-            const response = await fetch(url, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(bodyData),
-            });
-            const data = await response.json();
-            
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                setIsModalOpen(false);
-                fetchUsers(); // Tải lại danh sách
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: `Lỗi kết nối khi ${method === 'POST' ? 'thêm' : 'cập nhật'} người dùng.` });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // --- Hàm Xóa người dùng ---
-    const handleDeleteUser = async (userId) => {
-        if (!window.confirm("Bạn có chắc chắn muốn xóa người dùng này?")) return;
-        setMessage(null);
-        setLoading(true);
-
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                fetchUsers(); // Tải lại danh sách
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối khi xóa người dùng.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // --- Xử lý mở/đóng Modal ---
-    const openAddModal = () => {
-        setEditingUser(null);
-        setIsModalOpen(true);
-    };
-    const openEditModal = (user) => {
-        setEditingUser(user);
-        setIsModalOpen(true);
-    };
-
-    return (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
-            <h2 className="text-3xl font-bold mb-4 text-blue-700 flex items-center justify-between">
-                Quản trị Người dùng
-                <button 
-                    onClick={openAddModal}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600 transition"
-                >
-                    <PlusCircle size={20} />
-                    Thêm Người Dùng Mới
-                </button>
-            </h2>
-            
-            {message && <DisplayMessage type={message.type} message={message.text} onClose={() => setMessage(null)} />}
-
-            <div className="flex justify-end mb-4">
-                <button onClick={fetchUsers} disabled={loading} className="flex items-center gap-2 px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                    <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Tải lại
-                </button>
-            </div>
-
-            {loading && users.length === 0 ? (
-                <div className="text-center py-10">
-                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={32} />
-                    <p className="mt-2 text-gray-600">Đang tải dữ liệu người dùng...</p>
-                </div>
-            ) : (
-                <div className="overflow-x-auto border rounded-lg">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-blue-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">ID</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Tên Đăng Nhập</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Họ Tên</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Vai Trò (Role)</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Chức Vụ</th>
-                                <th className="px-6 py-3 text-center text-xs font-medium text-gray-600 uppercase tracking-wider">Lớp CN/PT</th>
-                                <th className="px-6 py-3 text-center text-xs font-medium text-gray-600 uppercase tracking-wider">Thao Tác</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-100">
-                            {users.map((u) => (
-                                <tr key={u.user_id} className={u.role === 'admin' ? 'bg-yellow-50' : ''}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{u.user_id}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{u.username}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{u.fullname}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600 font-semibold">{u.role}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{u.chuc_vu}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-center text-gray-700">{u.class_id || 'N/A'}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <div className="flex gap-2 justify-center">
-                                            <button 
-                                                onClick={() => openEditModal(u)}
-                                                className="text-indigo-600 hover:text-indigo-900 p-1 rounded-full hover:bg-indigo-50"
-                                                title="Chỉnh sửa"
-                                            >
-                                                <Edit3 size={18} />
-                                            </button>
-                                            {u.role !== 'admin' && ( // Không cho phép xóa Admin
-                                                <button 
-                                                    onClick={() => handleDeleteUser(u.user_id)}
-                                                    className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-50"
-                                                    title="Xóa"
-                                                >
-                                                    <Trash2 size={18} />
-                                                </button>
-                                            )}
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-            
-            {/* Modal Thêm/Sửa Người dùng */}
-            {isModalOpen && (
-                <UserFormModal 
-                    user={editingUser} 
-                    onSave={handleSaveUser} 
-                    onClose={() => setIsModalOpen(false)} 
-                    isLoading={loading}
-                />
-            )}
-        </div>
-    );
-}
-
-// --- Component Modal Form Thêm/Sửa Người dùng ---
-function UserFormModal({ user, onSave, onClose, isLoading }) {
-    const isEditing = !!user;
-    const initialFormState = {
-        user_id: user?.user_id || null,
-        username: user?.username || '',
-        password: '',
-        fullname: user?.fullname || '',
-        role: user?.role || 'giao_vien',
-        chuc_vu: user?.chuc_vu || 'Giáo viên bộ môn',
-        class_id: user?.class_id || '',
-    };
-    const [formData, setFormData] = useState(initialFormState);
-
-    const handleChange = (e) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({
-            ...prev,
-            [name]: value === "" ? null : value, // Lưu rỗng thành null
-        }));
-    };
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        // Kiểm tra validation cơ bản
-        if (!formData.username || !formData.fullname || !formData.role || (!isEditing && !formData.password)) {
-            alert("Vui lòng nhập Tên đăng nhập, Họ tên, Vai trò và Mật khẩu (khi thêm mới).");
-            return;
-        }
-        onSave(formData);
-    };
-
-    // Danh sách lớp học giả định để Bí thư/Giáo viên chủ nhiệm chọn
-    const mockClasses = ['10A1', '10A2', '11A1', '12A1', 'N/A']; 
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
-                <div className="flex justify-between items-center border-b pb-3 mb-4">
-                    <h3 className="text-xl font-bold text-blue-700">{isEditing ? 'Chỉnh Sửa Người Dùng' : 'Thêm Người Dùng Mới'}</h3>
-                    <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button>
-                </div>
-                
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Họ Tên</label>
-                        <input type="text" name="fullname" value={formData.fullname || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Tên Đăng Nhập</label>
-                        <input type="text" name="username" value={formData.username || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required disabled={isEditing} />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Mật khẩu {isEditing ? '(Bỏ trống nếu không thay đổi)' : '*'}</label>
-                        <input type="password" name="password" value={formData.password} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required={!isEditing} />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Vai Trò (Role)</label>
-                        <select name="role" value={formData.role} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                            {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                        </select>
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Chức Vụ</label>
-                        <input type="text" name="chuc_vu" value={formData.chuc_vu || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required />
-                    </div>
-
-                    {(formData.role === 'giao_vien' || formData.role === 'bi_thu') && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Lớp Chủ nhiệm/Phụ trách (CN/PT)</label>
-                            <select name="class_id" value={formData.class_id || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50">
-                                {mockClasses.map(c => <option key={c} value={c === 'N/A' ? '' : c}>{c}</option>)}
-                            </select>
-                            <p className="text-xs text-gray-500 mt-1">
-                                Chỉ cần thiết cho Giáo viên chủ nhiệm và Bí thư Chi đoàn.
-                            </p>
-                        </div>
-                    )}
-                    
-                    <div className="flex justify-end gap-3 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition">Hủy</button>
-                        <button 
-                            type="submit" 
-                            disabled={isLoading}
-                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition disabled:bg-gray-400"
-                        >
-                            {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />}
-                            {isEditing ? (isLoading ? 'Đang cập nhật...' : 'Lưu Thay Đổi') : (isLoading ? 'Đang thêm...' : 'Thêm Người Dùng')}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-}
-
-// --- TRANG: ADMIN - QUẢN LÝ LỚP HỌC (MỚI) ---
-function ClassManagementPage({ token }) {
-    const [classes, setClasses] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState(null); 
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingClass, setEditingClass] = useState(null);
-
-    const fetchClasses = async () => {
-        setLoading(true);
-        setMessage(null);
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/classes`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-            if (data.success) {
-                setClasses(data.classes);
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối: Không thể tải danh sách lớp học.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (token) {
-            fetchClasses();
-        }
-    }, [token]);
+  // 5. Bộ định tuyến (Router)
+  const renderPage = () => {
+    // Nếu chưa đăng nhập, chỉ cho phép xem trang Login
+    if (!token || !user) {
+      return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    }
     
-    // Thêm/Sửa Lớp học
-    const handleSaveClass = async (formData) => {
-        setMessage(null);
-        setLoading(true);
-        const method = formData.class_id ? 'PUT' : 'POST';
-        const url = formData.class_id 
-          ? `${API_BASE_URL}/admin/classes/${formData.class_id}` 
-          : `${API_BASE_URL}/admin/classes`;
-
-        try {
-            const response = await fetch(url, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(formData),
-            });
-            const data = await response.json();
-            
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                setIsModalOpen(false);
-                fetchClasses();
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: `Lỗi kết nối khi ${method === 'POST' ? 'thêm' : 'cập nhật'} lớp học.` });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Xóa Lớp học
-    const handleDeleteClass = async (classId) => {
-        if (!window.confirm("Bạn có chắc chắn muốn xóa lớp học này?")) return;
-        setMessage(null);
-        setLoading(true);
-
-        try {
-            const response = await fetch(`${API_BASE_URL}/admin/classes/${classId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                fetchClasses();
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối khi xóa lớp học.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
-            <h2 className="text-3xl font-bold mb-4 text-blue-700 flex items-center justify-between">
-                <Layers size={30} className="mr-2"/> Quản lý Danh sách Lớp Học
-                <button 
-                    onClick={() => { setEditingClass(null); setIsModalOpen(true); }}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600 transition"
-                >
-                    <PlusCircle size={20} />
-                    Thêm Lớp Mới
-                </button>
-            </h2>
-            
-            {message && <DisplayMessage type={message.type} message={message.text} onClose={() => setMessage(null)} />}
-
-            <div className="flex justify-end mb-4">
-                <button onClick={fetchClasses} disabled={loading} className="flex items-center gap-2 px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                    <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Tải lại
-                </button>
-            </div>
-
-            {loading && classes.length === 0 ? (
-                <div className="text-center py-10">
-                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={32} />
-                    <p className="mt-2 text-gray-600">Đang tải dữ liệu lớp học...</p>
-                </div>
-            ) : (
-                <div className="overflow-x-auto border rounded-lg">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-blue-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">ID</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Tên Lớp (class_name)</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Khối (grade)</th>
-                                <th className="px-6 py-3 text-center text-xs font-medium text-gray-600 uppercase tracking-wider">Thao Tác</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-100">
-                            {classes.map((cls) => (
-                                <tr key={cls.class_id}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{cls.class_id}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 font-semibold">{cls.class_name}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{cls.grade}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <div className="flex gap-2 justify-center">
-                                            <button 
-                                                onClick={() => { setEditingClass(cls); setIsModalOpen(true); }}
-                                                className="text-indigo-600 hover:text-indigo-900 p-1 rounded-full hover:bg-indigo-50"
-                                                title="Chỉnh sửa"
-                                            >
-                                                <Edit3 size={18} />
-                                            </button>
-                                            <button 
-                                                onClick={() => handleDeleteClass(cls.class_id)}
-                                                className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-50"
-                                                title="Xóa"
-                                            >
-                                                <Trash2 size={18} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-
-             {isModalOpen && (
-                <ClassFormModal 
-                    classData={editingClass} 
-                    onSave={handleSaveClass} 
-                    onClose={() => setIsModalOpen(false)} 
-                    isLoading={loading}
-                />
-            )}
-        </div>
-    );
-}
-
-// --- Component Modal Form Thêm/Sửa Lớp học ---
-function ClassFormModal({ classData, onSave, onClose, isLoading }) {
-    const isEditing = !!classData;
-    const initialFormState = {
-        class_id: classData?.class_id || null,
-        class_name: classData?.class_name || '',
-        grade: classData?.grade || 10,
-    };
-    const [formData, setFormData] = useState(initialFormState);
-
-    const handleChange = (e) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({
-            ...prev,
-            [name]: name === 'grade' ? parseInt(value) : value,
-        }));
-    };
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        if (!formData.class_name || !formData.grade) {
-            alert("Vui lòng nhập đầy đủ Tên lớp và Khối.");
-            return;
-        }
-        onSave(formData);
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
-                <div className="flex justify-between items-center border-b pb-3 mb-4">
-                    <h3 className="text-xl font-bold text-blue-700">{isEditing ? 'Chỉnh Sửa Lớp Học' : 'Thêm Lớp Học Mới'}</h3>
-                    <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button>
-                </div>
-                
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Tên Lớp (Ví dụ: 10A1)</label>
-                        <input type="text" name="class_name" value={formData.class_name || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required />
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Khối Học (Grade)</label>
-                        <select name="grade" value={formData.grade} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                            <option value={10}>10</option>
-                            <option value={11}>11</option>
-                            <option value={12}>12</option>
-                        </select>
-                    </div>
-                    
-                    <div className="flex justify-end gap-3 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition">Hủy</button>
-                        <button 
-                            type="submit" 
-                            disabled={isLoading}
-                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition disabled:bg-gray-400"
-                        >
-                            {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />}
-                            {isEditing ? (isLoading ? 'Đang cập nhật...' : 'Lưu Thay Đổi') : (isLoading ? 'Đang thêm...' : 'Thêm Lớp')}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-}
-
-// --- TRANG: ĐOÀN TRƯỜNG - QUẢN LÝ THỜI KHÓA BIỂU (MỚI) ---
-function ScheduleManagementPage({ token }) {
-    const [timetables, setTimetables] = useState([]);
-    const [classes, setClasses] = useState([]); // Danh sách lớp để chọn
-    const [users, setUsers] = useState([]); // Danh sách giáo viên/admin để chọn
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState(null); 
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingTKB, setEditingTKB] = useState(null);
-
-    // Fetch Classes và Users để tạo form TKB
-    useEffect(() => {
-        if (token) {
-            const fetchData = async () => {
-                const [classRes, userRes] = await Promise.all([
-                    fetch(`${API_BASE_URL}/admin/classes`, { headers: { 'Authorization': `Bearer ${token}` } }),
-                    fetch(`${API_BASE_URL}/admin/users`, { headers: { 'Authorization': `Bearer ${token}` } })
-                ]);
-
-                const classData = await classRes.json();
-                if (classData.success) setClasses(classData.classes);
-                
-                const userData = await userRes.json();
-                if (userData.success) setUsers(userData.users);
-
-                fetchTimetables();
-            };
-            fetchData();
-        }
-    }, [token]);
-
-    const fetchTimetables = async () => {
-        setLoading(true);
-        setMessage(null);
-        try {
-            const response = await fetch(`${API_BASE_URL}/doantruong/timetables`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-            if (data.success) {
-                // Sắp xếp theo lớp, sau đó theo thứ, sau đó theo tiết
-                const sortedData = data.timetables.sort((a, b) => {
-                    if (a.class_id !== b.class_id) return a.class_id - b.class_id;
-                    if (a.day_of_week !== b.day_of_week) return a.day_of_week - b.day_of_week;
-                    return a.lesson_number - b.lesson_number;
-                });
-                setTimetables(sortedData);
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối: Không thể tải danh sách Thời khóa biểu.' });
-        } finally {
-            setLoading(false);
-        }
-    };
+    // Nếu đang tải quy tắc (lần đầu), hiển thị loading
+    if (isLoadingRules || isLoadingClasses) {
+        return <div className="p-6">Đang tải dữ liệu cốt lõi (Quy tắc, Lớp học)...</div>
+    }
     
-    // Thêm/Sửa TKB
-    const handleSaveTKB = async (formData) => {
-        setMessage(null);
-        setLoading(true);
-        const method = formData.timetable_id ? 'PUT' : 'POST';
-        const url = formData.timetable_id 
-          ? `${API_BASE_URL}/doantruong/timetables/${formData.timetable_id}` 
-          : `${API_BASE_URL}/doantruong/timetables`;
-
-        try {
-            const response = await fetch(url, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(formData),
-            });
-            const data = await response.json();
-            
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                setIsModalOpen(false);
-                fetchTimetables();
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: `Lỗi kết nối khi ${method === 'POST' ? 'thêm' : 'cập nhật'} TKB.` });
-        } finally {
-            setLoading(false);
-        }
-    };
-    
-    // Xóa TKB
-    const handleDeleteTKB = async (timetableId) => {
-        if (!window.confirm("Bạn có chắc chắn muốn xóa tiết học này khỏi TKB?")) return;
-        setMessage(null);
-        setLoading(true);
-
-        try {
-            const response = await fetch(`${API_BASE_URL}/doantruong/timetables/${timetableId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-
-            if (data.success) {
-                setMessage({ type: 'success', text: data.message });
-                fetchTimetables();
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối khi xóa TKB.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Hàm chuyển day_of_week (1-7) thành tên (T2 - CN)
-    const getDayName = (day) => {
-        const days = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
-        return days[day % 7]; // 1=T2, 7=CN, 0=CN
-    };
-
-    // Map teacher_id to fullname
-    const getTeacherName = (teacherId) => {
-        const teacher = users.find(u => u.user_id === teacherId);
-        return teacher ? teacher.fullname : 'N/A';
-    };
-
-    return (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
-            <h2 className="text-3xl font-bold mb-4 text-purple-700 flex items-center justify-between">
-                <Calendar size={30} className="mr-2"/> Quản lý Thời Khóa Biểu Học Kỳ
-                <button 
-                    onClick={() => { setEditingTKB(null); setIsModalOpen(true); }}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600 transition"
-                >
-                    <PlusCircle size={20} />
-                    Thêm Tiết Học
-                </button>
-            </h2>
-            
-            {message && <DisplayMessage type={message.type} message={message.text} onClose={() => setMessage(null)} />}
-
-            <div className="flex justify-end mb-4">
-                <button onClick={fetchTimetables} disabled={loading} className="flex items-center gap-2 px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                    <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Tải lại
-                </button>
-            </div>
-
-            {loading && timetables.length === 0 ? (
-                 <div className="text-center py-10">
-                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={32} />
-                    <p className="mt-2 text-gray-600">Đang tải TKB...</p>
-                </div>
-            ) : (
-                <div className="overflow-x-auto border rounded-lg">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-purple-50">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Lớp</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Thứ</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Tiết</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Môn Học</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Giáo Viên</th>
-                                <th className="px-6 py-3 text-center text-xs font-medium text-gray-600 uppercase tracking-wider">Thao Tác</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-100">
-                            {timetables.map((tkb) => (
-                                <tr key={tkb.timetable_id}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{tkb.class_name}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 font-semibold">{getDayName(tkb.day_of_week)}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{tkb.lesson_number}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">{tkb.subject_name}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{getTeacherName(tkb.teacher_id)}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                        <div className="flex gap-2 justify-center">
-                                            <button 
-                                                onClick={() => { setEditingTKB(tkb); setIsModalOpen(true); }}
-                                                className="text-indigo-600 hover:text-indigo-900 p-1 rounded-full hover:bg-indigo-50"
-                                                title="Chỉnh sửa"
-                                            >
-                                                <Edit3 size={18} />
-                                            </button>
-                                            <button 
-                                                onClick={() => handleDeleteTKB(tkb.timetable_id)}
-                                                className="text-red-600 hover:text-red-900 p-1 rounded-full hover:bg-red-50"
-                                                title="Xóa"
-                                            >
-                                                <Trash2 size={18} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-
-            {isModalOpen && (
-                <TKBFormModal 
-                    tkbData={editingTKB} 
-                    onSave={handleSaveTKB} 
-                    onClose={() => setIsModalOpen(false)} 
-                    isLoading={loading}
-                    classes={classes}
-                    teachers={users.filter(u => u.role === 'giao_vien' || u.role === 'admin')} // Chỉ chọn giáo viên hoặc admin
-                />
-            )}
-        </div>
-    );
-}
-
-// --- Component Modal Form Thêm/Sửa TKB ---
-function TKBFormModal({ tkbData, onSave, onClose, isLoading, classes, teachers }) {
-    const isEditing = !!tkbData;
-    const initialFormState = {
-        timetable_id: tkbData?.timetable_id || null,
-        class_id: tkbData?.class_id || (classes[0]?.class_id || ''), // Default to first class
-        day_of_week: tkbData?.day_of_week || 1, // Default T2
-        lesson_number: tkbData?.lesson_number || 1, // Default tiết 1
-        subject_name: tkbData?.subject_name || '',
-        teacher_id: tkbData?.teacher_id || (teachers[0]?.user_id || ''), // Default to first teacher
-    };
-    const [formData, setFormData] = useState(initialFormState);
-
-    const handleChange = (e) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({
-            ...prev,
-            [name]: name === 'class_id' || name === 'teacher_id' ? parseInt(value) : (name === 'day_of_week' || name === 'lesson_number' ? parseInt(value) : value),
-        }));
-    };
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        if (!formData.class_id || !formData.day_of_week || !formData.lesson_number || !formData.subject_name || !formData.teacher_id) {
-            alert("Vui lòng nhập đầy đủ thông tin tiết học.");
-            return;
-        }
-        onSave(formData);
-    };
-
-    // Tạo mảng Tiết học (1-10)
-    const lessonNumbers = Array.from({ length: 10 }, (_, i) => i + 1);
-    // Tạo mảng Thứ (1-7)
-    const daysOfWeek = [
-        { id: 1, name: 'Thứ Hai' },
-        { id: 2, name: 'Thứ Ba' },
-        { id: 3, name: 'Thứ Tư' },
-        { id: 4, name: 'Thứ Năm' },
-        { id: 5, name: 'Thứ Sáu' },
-        { id: 6, name: 'Thứ Bảy' },
-        { id: 7, name: 'Chủ Nhật' }
-    ];
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
-                <div className="flex justify-between items-center border-b pb-3 mb-4">
-                    <h3 className="text-xl font-bold text-blue-700">{isEditing ? 'Chỉnh Sửa Tiết Học TKB' : 'Thêm Tiết Học Mới'}</h3>
-                    <button onClick={onClose} className="text-gray-500 hover:text-gray-800"><X size={24} /></button>
-                </div>
-                
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Lớp Học (*)</label>
-                            <select name="class_id" value={formData.class_id || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                                <option value="" disabled>Chọn Lớp</option>
-                                {classes.map(cls => <option key={cls.class_id} value={cls.class_id}>{cls.class_name}</option>)}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Giáo Viên (*)</label>
-                            <select name="teacher_id" value={formData.teacher_id || ''} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                                <option value="" disabled>Chọn Giáo Viên</option>
-                                {teachers.map(t => <option key={t.user_id} value={t.user_id}>{t.fullname}</option>)}
-                            </select>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-4">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">Thứ (*)</label>
-                            <select name="day_of_week" value={formData.day_of_week} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                                {daysOfWeek.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                            </select>
-                        </div>
-                         <div>
-                            <label className="block text-sm font-medium text-gray-700">Tiết (*)</label>
-                            <select name="lesson_number" value={formData.lesson_number} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required>
-                                {lessonNumbers.map(l => <option key={l} value={l}>{l}</option>)}
-                            </select>
-                            <p className="text-xs text-gray-500 mt-1">Buổi sáng: 1-5, Buổi chiều: 6-10</p>
-                        </div>
-                        <div className="col-span-1">
-                            <label className="block text-sm font-medium text-gray-700">Môn Học (*)</label>
-                            <input type="text" name="subject_name" value={formData.subject_name} onChange={handleChange} className="w-full p-2 border rounded-lg bg-gray-50" required />
-                        </div>
-                    </div>
-
-                    <div className="flex justify-end gap-3 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition">Hủy</button>
-                        <button 
-                            type="submit" 
-                            disabled={isLoading}
-                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition disabled:bg-gray-400"
-                        >
-                            {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />}
-                            {isEditing ? (isLoading ? 'Đang cập nhật...' : 'Lưu Thay Đổi') : (isLoading ? 'Đang thêm...' : 'Thêm Tiết Học')}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-}
-
-// --- TRANG: XEM THỜI KHÓA BIỂU (GIÁO VIÊN/BÍ THƯ/BGH) ---
-function SchedulePage({ user, token }) {
-    const [schedule, setSchedule] = useState({}); // TKB theo lớp/cá nhân
-    const [classes, setClasses] = useState([]); // Danh sách lớp để chọn (nếu là BGH/GV bộ môn)
-    const [selectedClass, setSelectedClass] = useState(user.class_id || ''); // Lớp mặc định
-    const [loading, setLoading] = useState(false);
-    const [message, setMessage] = useState(null); 
-    const [isPersonal, setIsPersonal] = useState(user.role === 'giao_vien' || user.role === 'ban_giam_hieu');
-
-    // Fetch Classes và TKB
-    useEffect(() => {
-        if (token) {
-            const fetchData = async () => {
-                const classRes = await fetch(`${API_BASE_URL}/admin/classes`, { headers: { 'Authorization': `Bearer ${token}` } });
-                const classData = await classRes.json();
-                if (classData.success) {
-                    setClasses(classData.classes);
-                }
-                // Nếu là GVCN/Bí thư, set lớp mặc định, nếu không thì lấy lớp đầu tiên (hoặc để trống)
-                if (user.class_id) {
-                    setSelectedClass(user.class_id);
-                } else if (classData.classes.length > 0 && user.role !== 'giao_vien') {
-                    setSelectedClass(classData.classes[0].class_id);
-                }
-            };
-            fetchData();
-        }
-    }, [token, user.class_id, user.role]);
-
-    useEffect(() => {
-        if (token && (selectedClass || isPersonal)) {
-            fetchSchedule();
-        }
-    }, [token, selectedClass, isPersonal]);
-
-
-    const fetchSchedule = async () => {
-        setLoading(true);
-        setMessage(null);
-        let url;
-        if (isPersonal) {
-             // Lấy TKB cá nhân (dựa trên teacher_id = user_id)
-            url = `${API_BASE_URL}/schedule/teacher/${user.user_id}`;
-        } else if (selectedClass) {
-             // Lấy TKB theo lớp
-            url = `${API_BASE_URL}/schedule/class/${selectedClass}`;
-        } else {
-            setLoading(false);
-            return;
-        }
-
-        try {
-            const response = await fetch(url, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await response.json();
-            if (data.success) {
-                setSchedule(formatSchedule(data.timetables));
-            } else {
-                setMessage({ type: 'error', text: data.message });
-            }
-        } catch (error) {
-            setMessage({ type: 'error', text: 'Lỗi kết nối: Không thể tải Thời khóa biểu.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Định dạng lại dữ liệu TKB thành object: { day_of_week: { lesson_number: item, ... }, ... }
-    const formatSchedule = (timetables) => {
-        const structured = {};
-        timetables.forEach(item => {
-            const day = item.day_of_week;
-            if (!structured[day]) {
-                structured[day] = {};
-            }
-            structured[day][item.lesson_number] = item;
-        });
-        return structured;
-    };
-
-    const lessonNumbers = Array.from({ length: 10 }, (_, i) => i + 1); // 1-10 tiết
-    const daysOfWeek = Array.from({ length: 6 }, (_, i) => i + 1); // Thứ 2 (1) -> Thứ 7 (6)
-    const getDayName = (day) => {
-        const names = ['', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
-        return names[day];
-    };
-    
-    // Tên lớp hiện tại
-    const currentClassName = classes.find(c => c.class_id === selectedClass)?.class_name || 'Chọn Lớp';
-    const isSubjectTeacher = user.role === 'giao_vien' && !user.class_id;
-
-    return (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
-            <h2 className="text-3xl font-bold mb-4 text-orange-700 flex items-center gap-3">
-                <Clock size={30} /> Thời Khóa Biểu 
-                <span className="text-xl font-medium text-gray-700 ml-4">
-                     {isPersonal && `Cá nhân (${user.fullname})`}
-                     {!isPersonal && `Lớp ${currentClassName}`}
-                </span>
-            </h2>
-
-            <div className="mb-6 flex gap-4 items-center">
-                {/* Selector cho BGH và GV bộ môn (nếu không chủ nhiệm) */}
-                {(user.role === 'ban_giam_hieu' || isSubjectTeacher) && (
-                     <select 
-                        value={selectedClass || ''} 
-                        onChange={(e) => setSelectedClass(parseInt(e.target.value))}
-                        className="p-2 border rounded-lg bg-white shadow-sm"
-                     >
-                        <option value="" disabled>Chọn Lớp cần xem</option>
-                        {classes.map(cls => <option key={cls.class_id} value={cls.class_id}>{cls.class_name}</option>)}
-                    </select>
-                )}
-
-                {/* Nút chuyển đổi giữa TKB cá nhân và TKB lớp (Chỉ cho GV và BGH) */}
-                {(user.role === 'giao_vien' || user.role === 'ban_giam_hieu') && (
-                    <button
-                        onClick={() => setIsPersonal(!isPersonal)}
-                        className="flex items-center gap-2 px-3 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-sm"
-                    >
-                        <Check size={16}/> Chuyển sang TKB {isPersonal ? 'Lớp' : 'Cá nhân'}
-                    </button>
-                )}
-            </div>
-
-            {message && <DisplayMessage type={message.type} message={message.text} onClose={() => setMessage(null)} />}
-
-            {loading ? (
-                <div className="text-center py-10">
-                    <Loader2 className="animate-spin text-blue-500 mx-auto" size={32} />
-                    <p className="mt-2 text-gray-600">Đang tải TKB...</p>
-                </div>
-            ) : (
-                <div className="overflow-x-auto border rounded-lg shadow-xl">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-orange-100 sticky top-0">
-                            <tr>
-                                <th className="px-4 py-3 text-center text-sm font-bold text-gray-800 border-r">Tiết / Thứ</th>
-                                {daysOfWeek.map(day => (
-                                    <th key={day} className="px-4 py-3 text-center text-sm font-bold text-gray-800 border-r">{getDayName(day)}</th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-100">
-                            {lessonNumbers.map(lesson => (
-                                <tr key={lesson}>
-                                    <td className={`px-4 py-3 text-center text-sm font-bold text-gray-900 border-r ${lesson > 5 ? 'bg-orange-50' : ''}`}>
-                                        {lesson} {lesson === 5 && <span className="text-xs font-normal text-gray-500 block">(Giải lao)</span>}
-                                        {lesson === 10 && <span className="text-xs font-normal text-gray-500 block">(Kết thúc)</span>}
-                                    </td>
-                                    {daysOfWeek.map(day => {
-                                        const item = schedule[day]?.[lesson];
-                                        const content = item ? (
-                                            <>
-                                                <div className="font-semibold text-blue-700">{item.subject_name}</div>
-                                                <div className="text-xs text-gray-600">Lớp: {item.class_name}</div>
-                                                <div className="text-xs text-gray-500">GV: {item.teacher_fullname}</div>
-                                            </>
-                                        ) : (
-                                            <span className="text-gray-400 text-xs">-</span>
-                                        );
-                                        return (
-                                            <td key={`${day}-${lesson}`} className="px-4 py-3 text-center text-sm border-r h-20 hover:bg-gray-50 transition">
-                                                {content}
-                                            </td>
-                                        );
-                                    })}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-        </div>
-    );
-}
-
-// --- CÁC TRANG MOCKUP KHÁC (GIỮ NGUYÊN) ---
-function PublicDashboard({ rankings }) { 
-    if (!rankings || rankings.length === 0) {
-        return (
-          <div className="p-6 bg-white rounded-lg shadow-md text-center text-gray-500">
-            Không có dữ liệu bảng xếp hạng tuần này hoặc đang tải...
-          </div>
-        );
+    // Nếu lỗi tải quy tắc
+    if (rulesError || classesError) {
+        return <div className="p-6 text-red-600">Lỗi nghiêm trọng: Không thể tải Quy tắc hoặc Lớp học. {rulesError || classesError}</div>
     }
 
-    return (
-        <div className="p-6 bg-white rounded-xl shadow-lg">
-          <h2 className="text-2xl font-bold mb-6 text-blue-700">
-            Bảng Xếp Hạng Thi Đua Tuần
-            <select className="ml-4 p-2 border rounded-lg bg-white text-base font-normal shadow-sm">
-                <option>Tuần hiện tại (30)</option>
-                <option>Tuần trước (29)</option>
-            </select>
-          </h2>
-          <div className="overflow-x-auto border rounded-lg">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hạng</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tên Lớp</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Điểm Tổng</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {rankings.map((lop, index) => (
-                  <tr key={lop.ten_lop} className={index < 3 ? 'bg-yellow-50 font-bold' : (index % 2 === 0 ? 'bg-white' : 'bg-gray-50')}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{lop.rank_position}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{lop.ten_lop}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{lop.total_score}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    // Đã đăng nhập
+    switch (currentPage) {
+      // Chung
+      case 'dashboard':
+        return <RankingDashboard token={token} />;
+      
+      // Admin
+      case 'admin_users':
+        return <UserManagementPage token={token} onNavigate={setCurrentPage} classes={classes} />;
+      case 'admin_classes':
+        // (SỬA V5.7) Truyền 'classes' và 'refreshClasses' từ Hook
+        return <ClassManagementPage token={token} onNavigate={setCurrentPage} classes={classes} loadClasses={refreshClasses} />;
+      case 'admin_calculate_ranking':
+        return <RankingCalculationPage token={token} />;
+        
+      // Đoàn Trường
+      case 'schedule_management':
+        return <ScheduleManagementPage token={token} classes={classes} />;
+      case 'violation_approval':
+        return <ViolationApprovalPage token={token} />;
+        
+      // Giáo viên / BGH
+      case 'logbook':
+        return <LogbookPage token={token} user={user} allRules={allRules} />;
+        
+      // Cờ Đỏ
+      case 'violation_form':
+        return <ViolationForm token={token} user={user} allRules={allRules} classes={classes} />; 
+        
+      // Bí thư
+      case 'violation_confirmation':
+        return <ViolationConfirmationPage token={token} user={user} />;
+        
+      // Trang không tồn tại
+      default:
+        return <RankingDashboard token={token} />;
+    }
+  };
+
+  // Nếu chưa đăng nhập, chỉ hiển thị trang Login
+  if (!token || !user) {
+      return (
+          <div className="min-h-screen bg-gray-100">
+              <Header user={null} onLogout={handleLogout} onNavigate={setCurrentPage} />
+              <LoginPage onLoginSuccess={handleLoginSuccess} />
           </div>
-        </div>
       );
-}
+  }
 
-const MOCK_TKB_GV = {
-  thu: "Thứ Ba",
-  ngay: "11/11/2025",
-  tiet: [
-    { id: 1, mon: "Toán", lop: "12A1", trang_thai: "Chưa ký" },
-    { id: 2, mon: "Toán", lop: "12A1", trang_thai: "Chưa ký" },
-    { id: 3, mon: "Vật Lý", lop: "11A5", trang_thai: "Đã ký" },
-  ]
-};
-function LogbookPage({ user }) {
+  // Giao diện khi đã đăng nhập
   return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-2xl font-bold mb-4 text-blue-700">Sổ Đầu Bài Điện Tử</h2>
-      <p className="text-gray-600 mb-4">Danh sách tiết dạy hôm nay ({MOCK_TKB_GV.ngay})</p>
-      {MOCK_TKB_GV.tiet.map(tiet => (
-        <div key={tiet.id} className="flex justify-between items-center p-4 border rounded-lg mb-3 bg-gray-50 hover:bg-white transition">
-          <div>
-            <span className="font-bold text-lg text-blue-600">Tiết {tiet.id}: {tiet.mon}</span>
-            <span className="text-gray-700 ml-4">Lớp {tiet.lop}</span>
-          </div>
-          <button className={`px-4 py-2 rounded-lg font-semibold shadow-md ${tiet.trang_thai === 'Đã ký' ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-orange-500 text-white hover:bg-orange-600'}`}>
-            {tiet.trang_thai === 'Đã ký' ? 'Xem & Chỉnh sửa' : 'Ký sổ & Đánh giá'}
-          </button>
-        </div>
-      ))}
-       <p className="mt-6 text-sm text-gray-500">Lưu ý: Chỉ người chấm tiết mới có quyền sửa kết quả sau khi ký.</p>
-    </div>
-  );
-}
+    <div className="flex min-h-screen">
+      {/* Sidebar (Bên trái) */}
+      <div className="w-64 bg-white shadow-lg p-4 h-screen sticky top-0">
+        <Sidebar
+          userRole={user.role}
+          onNavigate={setCurrentPage}
+          currentPage={currentPage}
+        />
+      </div>
 
-function CoDoReportPage({ user }) {
-  return (
-    <div className="p-6 bg-white rounded-xl shadow-lg max-w-lg mx-auto">
-      <h2 className="text-2xl font-bold mb-4 text-red-700">Gửi Báo Cáo Vi Phạm</h2>
-      <p className="text-gray-600 mb-6">Đội Cờ đỏ ({user.fullname}) ghi nhận vi phạm tại đây.</p>
-      <form className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700">Chọn Lớp Vi Phạm</label>
-          <select className="w-full p-3 border rounded-lg bg-gray-50 mt-1">
-            <option>10A1</option><option>10A2</option><option>12A8</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700">Chọn Lỗi Vi Phạm</label>
-          <select className="w-full p-3 border rounded-lg bg-gray-50 mt-1">
-            <option>Đi trễ</option><option>Không đồng phục</option><option>Vứt rác không đúng nơi</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700">Thời gian & Địa điểm</label>
-           <input type="text" placeholder="Ví dụ: 7h05 tại cổng trường" className="w-full p-3 border rounded-lg bg-gray-50 mt-1" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700">Ghi chú chi tiết</label>
-          <textarea className="w-full p-3 border rounded-lg bg-gray-50 mt-1" rows="3"></textarea>
-        </div>
-        <button type="submit" className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg font-semibold hover:bg-red-700 transition">
-          <Flag size={20} /> Gửi Báo Cáo Vi Phạm
-        </button>
-      </form>
-    </div>
-  );
-}
-const MOCK_VIOLATIONS = [
-  { id: 1, loi: "Đi trễ", nguoi_bao_cao: "Cờ đỏ A", status: "Chờ xác nhận" },
-  { id: 2, loi: "Không đồng phục", nguoi_bao_cao: "Cờ đỏ B", status: "Chờ xác nhận" },
-];
-function BiThuApprovePage({ user }) {
-  return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-2xl font-bold mb-4 text-green-700">Xác Nhận Vi Phạm Lớp {user.class_id || 'Chủ nhiệm'}</h2>
-      <p className="text-gray-600 mb-6">Bí thư Chi đoàn xác nhận hoặc phản hồi các vi phạm được Cờ đỏ báo cáo.</p>
-      {MOCK_VIOLATIONS.map(v => (
-        <div key={v.id} className="flex justify-between items-center p-4 border rounded-lg mb-3 bg-yellow-50">
-          <div>
-            <span className="font-bold text-lg">{v.loi}</span>
-            <span className="text-gray-600 text-sm ml-4">(Báo cáo bởi: {v.nguoi_bao_cao})</span>
-            <p className="text-xs text-red-500 mt-1">Trạng thái: {v.status}</p>
-          </div>
-          <div className="flex gap-2">
-            <button className="flex items-center gap-1 px-3 py-2 bg-green-500 text-white rounded-lg text-sm hover:bg-green-600"><CheckSquare size={16}/> Xác nhận Đúng</button>
-            <button className="flex items-center gap-1 px-3 py-2 bg-red-500 text-white rounded-lg text-sm hover:bg-red-600"><XCircle size={16}/> Phản hồi Sai</button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DoanTruongManagePage({ user }) {
-   return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-2xl font-bold mb-4 text-purple-700">Quản lý Lỗi Vi Phạm & Duyệt Phản Hồi</h2>
-      <p className="text-gray-600">Đoàn trường có quyền xem/sửa/xóa danh sách lỗi. Đồng thời duyệt hoặc hủy các phản hồi từ Bí thư Chi đoàn.</p>
-    </div>
-  );
-}
-
-function BGHManagePage({ user }) {
-   return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-2xl font-bold mb-4 text-indigo-700">Quản lý Giáo Viên & Ký Sổ Thay</h2>
-      <p className="text-gray-600">Ban Giám Hiệu có thể:</p>
-      <ul className="list-disc list-inside ml-4 mt-2 text-gray-700">
-        <li>Xem, sửa thông tin các Giáo viên (Giáo viên bộ môn, Giáo viên chủ nhiệm).</li>
-        <li>Chấm tiết thay cho Giáo viên vắng.</li>
-      </ul>
+      {/* Nội dung chính (Bên phải) */}
+      <div className="flex-1 bg-gray-100">
+        <Header user={user} onLogout={handleLogout} onNavigate={setCurrentPage} />
+        <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+          {renderPage()}
+        </main>
+      </div>
     </div>
   );
 }
